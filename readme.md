@@ -31,7 +31,7 @@ An intuitive web interface for searching and requesting book downloads, designed
 ### Installation Steps
 1. Get the docker-compose.yml:
    ```bash
-   curl -O https://raw.githubusercontent.com/calibrain/Calibre-Web-Automated-BookDownloader/main/docker-compose.yml
+   curl -O https://raw.githubusercontent.com/calibrain/calibre-web-automated-book-downloader/refs/heads/main/docker-compose.yml
    ```
 
 2. Start the service:
