@@ -63,9 +63,9 @@ def index():
     """
     return render_template('index.html')
 
-@app.route('/favico<path:favicon_path>')
-@app.route('/request/favico<path:favicon_path>')
-@app.route('/request/static/favico<path:favicon_path>')
+@app.route('/favico<path:_>')
+@app.route('/request/favico<path:_>')
+@app.route('/request/static/favico<path:_>')
 def favicon(_):
     return send_from_directory(os.path.join(app.root_path, 'static', 'media'),
         'favicon.ico', mimetype='image/vnd.microsoft.icon')
