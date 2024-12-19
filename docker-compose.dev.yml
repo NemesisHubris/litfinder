@@ -1,7 +1,9 @@
 # If you change the FLASK_PORT, do not forget to change it in ports and healthcheck as well.
 services:
   calibre-web-automated-book-downloader:
-    image: ghcr.io/calibrain/calibre-web-automated-book-downloader:latest
+    build :
+      context: .
+      dockerfile: Dockerfile
     environment:
       FLASK_PORT: 8084
       FLASK_DEBUG: false
