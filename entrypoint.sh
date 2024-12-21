@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+# set -e
 
 mkdir -p /var/logs
 mkdir -p "$INGEST_DIR"
