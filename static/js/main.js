@@ -165,12 +165,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
         createActionCell(book) {
             const buttonDetails = utils.createElement('button', {
-                className: 'uk-button uk-button-default uk-align-center uk-margin-small',
+                className: 'uk-button uk-button-default uk-align-center uk-margin-small uk-width-1-1',
                 onclick: () => bookDetails.show(book.id)
             }, [utils.createElement('span', { textContent: 'Details' })]);
 
             const downloadButton = utils.createElement('button', {
-                className: 'uk-button uk-button-primary uk-align-center uk-margin-small',
+                className: 'uk-button uk-button-primary uk-align-center uk-margin-small uk-width-1-1',
                 onclick: () => bookDetails.downloadBook(book)
             }, [utils.createElement('span', { textContent: 'Download' })]);
 
