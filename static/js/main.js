@@ -4,7 +4,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const elements = {
         searchInput: document.getElementById('search-input'),
         searchButton: document.getElementById('search-button'),
-        resultsSection: document.getElementById('results-section'),
+        resultsSectionAccordion: document.getElementById('results-section-accordion'),
+        searchAccordion: document.getElementById('search-accordion'),
         resultsHeading: document.getElementById('results-heading'),
         resultsTable: document.getElementById('results-table'),
         resultsTableBody: document.querySelector('#results-table tbody'),
@@ -96,7 +97,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 STATE.isSearching = true;
                 utils.showLoading(elements.searchLoading);
 
-                utils.showAccordion(elements.resultsSection);
+                if (!elements.searchAccordion.classList.contains('uk-open'))
+                {
+                    utils.showAccordion(elements.resultsSectionAccordion);
+                };
                 const data = await utils.fetchJson(
                     `${API_ENDPOINTS.search}?query=${encodeURIComponent(query)}`
                 );
