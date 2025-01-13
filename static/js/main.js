@@ -85,6 +85,60 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
             return element;
+        },
+
+        sortResultsTable(column, order = 'asc') {
+            const rows = Array.from(elements.resultsTableBody.querySelectorAll('tr'));
+            const headers = document.querySelectorAll('#results-table thead th');
+
+            const parseFileSize = (size) => {
+                const match = size.match(/([\d.]+)([KMGT]B)/i);
+                if (!match) return 0;
+                const [_, value, unit] = match;
+                const multiplier = { KB: 1, MB: 1024, GB: 1024 * 1024, TB: 1024 * 1024 * 1024 };
+                return parseFloat(value) * (multiplier[unit.toUpperCase()] || 1);
+            };
+
+            const parseTitle = (title) => {
+                return title.replace(/^(The)\s+/i, '').trim();
+            }
+
+            const columnName = headers[column].textContent.trim().toLowerCase();
+
+            const getCellValue = (row, column) => {
+                const cell = row.querySelector(`td:nth-child(${column + 1})`);
+                const text = cell ? cell.textContent.trim() : '';
+                if (columnName === 'size') return parseFileSize(text);
+                if (columnName === 'title') return parseTitle(text);
+            };
+
+            rows.sort((a, b) => {
+                const valA = getCellValue(a, column);
+                const valB = getCellValue(b, column);
+
+                if (!isNaN(valA) && !isNaN(valB)) {
+                    return order === 'asc' ? valA - valB : valB - valA;
+                }
+                return order === 'asc'
+                    ? valA.localeCompare(valB)
+                    : valB.localeCompare(valA);
+            });
+
+            elements.resultsTableBody.innerHTML = '';
+            rows.forEach(row => elements.resultsTableBody.appendChild(row));
+
+            headers.forEach(header => {
+                const icon = header.querySelector('.sort-icon');
+                if (icon) {
+                    icon.removeAttribute('uk-icon');
+                }
+            });
+
+            const currentHeader = headers[column];
+            const icon = currentHeader.querySelector('.sort-icon');
+            if (icon) {
+                icon.setAttribute('uk-icon', `icon: ${order === 'asc' ? 'triangle-up' : 'triangle-down'}`);
+            }
         }
     };
 
@@ -435,6 +489,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 modal.close();
             }
         });
+
+        function setupSorting() {
+            const headers = document.querySelectorAll('#results-table thead th');
+            headers.forEach((header, index) => {
+                let sortOrder = 'asc';
+                header.addEventListener('click', () => {
+                    utils.sortResultsTable(index, sortOrder);
+                    sortOrder = sortOrder === 'asc' ? 'desc' : 'asc';
+                });
+            });
+        }
+
+        setupSorting();
     }
 
     // Initialize
