@@ -4,9 +4,17 @@ import logging
 import sys
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
-from env import FLASK_DEBUG, LOG_FILE, ENABLE_LOGGING
+from env import FLASK_DEBUG, LOG_FILE, ENABLE_LOGGING, LOG_LEVEL
+from typing import Any, Optional
 
-def setup_logger(name: str, log_file: Path = LOG_FILE) -> logging.Logger:
+class CustomLogger(logging.Logger):
+    """Custom logger class with additional error_trace method."""
+    
+    def error_trace(self, msg: Any, *args: Any, **kwargs: Any) -> None:
+        """Log an error message with full stack trace."""
+        self.error(msg, *args, exc_info=True, **kwargs)
+
+def setup_logger(name: str, log_file: Path = LOG_FILE) -> CustomLogger:
     """Set up and configure a logger instance.
     
     Args:
@@ -14,18 +22,25 @@ def setup_logger(name: str, log_file: Path = LOG_FILE) -> logging.Logger:
         log_file: Optional path to log file. If None, logs only to stdout/stderr
         
     Returns:
-        logging.Logger: Configured logger instance
+        CustomLogger: Configured logger instance with error_trace method
     """
-    logger = logging.getLogger(name)
-    logger.setLevel(logging.INFO)
+    # Register our custom logger class
+    logging.setLoggerClass(CustomLogger)
     
-    # Add helper method for error logging with stack trace
-    def error_trace(self, msg, *args, **kwargs):
-        """Log an error message with full stack trace."""
-        self.error(msg, *args, exc_info=True, **kwargs)
-    
-    # Attach the helper method to the logger
-    logger.error_trace = error_trace.__get__(logger)
+    # Create logger as CustomLogger instance
+    logger = CustomLogger(name)
+    log_level = logging.INFO
+    if LOG_LEVEL == "DEBUG":
+        log_level = logging.DEBUG
+    elif LOG_LEVEL == "INFO":
+        log_level = logging.INFO
+    elif LOG_LEVEL == "WARNING":
+        log_level = logging.WARNING
+    elif LOG_LEVEL == "ERROR":
+        log_level = logging.ERROR
+    elif LOG_LEVEL == "CRITICAL":
+        log_level = logging.CRITICAL
+    logger.setLevel(log_level)
     
     formatter = logging.Formatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s'
@@ -34,16 +49,13 @@ def setup_logger(name: str, log_file: Path = LOG_FILE) -> logging.Logger:
     # Console handler for Docker output
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
-    if FLASK_DEBUG:
-        console_handler.setLevel(logging.DEBUG)
-    else:
-        console_handler.setLevel(logging.INFO)
-    console_handler.addFilter(lambda record: record.levelno < logging.ERROR)  # Only allow logs below ERROR
+    console_handler.setLevel(log_level)
+    console_handler.addFilter(lambda record: record.levelno < logging.ERROR)  # Only allow logs below ERROR to stdout
     logger.addHandler(console_handler)
     
     # Error handler for stderr
     error_handler = logging.StreamHandler(sys.stderr)
-    error_handler.setLevel(logging.ERROR)
+    error_handler.setLevel(logging.ERROR) # Error and above go to stderr
     error_handler.setFormatter(formatter)
     logger.addHandler(error_handler)
     

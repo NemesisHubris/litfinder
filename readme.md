@@ -60,8 +60,10 @@ An intuitive web interface for searching and requesting book downloads, designed
 | `UID`             | Runtime user ID         | `1000`             |
 | `GID`             | Runtime group ID        | `100`              |
 | `ENABLE_LOGGING`  | Enable log file         | `true`             |
+| `LOG_LEVEL`       | Log level to use        | `info`             |
 
 If logging is enabld, log folder default location is `/var/log/cwa-book-downloader`
+Available log levels: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Higher levels show fewer messages.
 
 #### Download Settings
 
@@ -89,11 +91,13 @@ If disabling the cloudflare bypass, you will be using alternative download hosts
 
 #### Network Settings
 
-| Variable               | Description                   | Default Value           |
-| ---------------------- | ----------------------------- | ----------------------- |
-| `PORT`                 | Container external port       | `8084`                  |
-| `HTTP_PROXY`           | HTTP proxy URL                | ``                      |
-| `HTTPS_PROXY`          | HTTPS proxy URL               | ``                      |
+| Variable               | Description                     | Default Value           |
+| ---------------------- | ------------------------------- | ----------------------- |
+| `AA_ADDITIONAL_URLS`   | Proxy URLs for AA (, separated) | ``                      |
+| `HTTP_PROXY`           | HTTP proxy URL                  | ``                      |
+| `HTTPS_PROXY`          | HTTPS proxy URL                 | ``                      |
+| `CUSTOM_DNS`           | Custom DNS IP                   | ``                      |
+| `USE_DOH`              | Use DNS over HTTPS              | `false`                 |
 
 For proxy configuration, you can specify URLs in the following format:
 ```bash
@@ -106,6 +110,30 @@ HTTP_PROXY=http://username:password@proxy.example.com:8080
 HTTPS_PROXY=http://username:password@proxy.example.com:8080
 ```
 
+
+The `CUSTOM_DNS` setting supports two formats:
+
+1. **Custom DNS Servers**: A comma-separated list of DNS server IP addresses
+   - Example: `127.0.0.53,127.0.1.53` (useful for PiHole)
+   - Supports both IPv4 and IPv6 addresses in the same string
+
+2. **Preset DNS Providers**: Use one of these predefined options:
+   - `google` - Google DNS
+   - `quad9` - Quad9 DNS
+   - `cloudflare` - Cloudflare DNS
+   - `opendns` - OpenDNS
+
+For users experiencing ISP-level website blocks (such as Virgin Media in the UK), using alternative DNS providers like Cloudflare may help bypass these restrictions
+
+If a `CUSTOM_DNS` is specified from the preset providers, you can also set a `USE_DOH=true` to force using DNS over HTTPS,
+which might also help in certain network situations. Note that only `google`, `quad9`, `cloudflare` and `opendns` are 
+supported for now, and any other value in `CUSTOM_DNS` will make the `USE_DOH` flag ignored.
+
+Try something like this :
+```bash
+CUSTOM_DNS=cloudflare
+USE_DOH=true
+```
 
 #### Custom configuration
 
@@ -191,3 +219,4 @@ Please note that the current version:
 ## 💬 Support
 
 For issues or questions, please file an issue on the GitHub repository.
+
