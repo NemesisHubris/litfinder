@@ -142,7 +142,12 @@ def _download_book(book_id: str) -> bool:
             if CROSS_FILE_SYSTEM:
                 logger.info(f"Copying book to ingest directory then renaming: {book_path} -> {final_path}.crdownload -> {final_path}")
                 tmp_path = final_path.with_name(final_path.name + ".crdownload")
-                shutil.move(book_path, tmp_path)
+                try:
+                    shutil.move(book_path, tmp_path)
+                except Exception as e:
+                    logger.debug(f"Error moving book: {e}, will try copying instead")
+                    shutil.copy(book_path, tmp_path)
+                    os.remove(book_path)
                 os.rename(tmp_path, final_path)
             else:
                 logger.info(f"Moving book to ingest directory: {book_path} -> {final_path}")
