@@ -90,9 +90,3 @@ if CUSTOM_SCRIPT:
         logger.warn(f"CUSTOM_SCRIPT {CUSTOM_SCRIPT} is not executable")
         CUSTOM_SCRIPT = ""
 
-# Docker settings
-if env.DOCKERMODE and env.USE_CF_BYPASS:
-    from pyvirtualdisplay import Display
-    display = Display(visible=False, size=(800, 600))
-    display.start()
-    logger.info("Display started")

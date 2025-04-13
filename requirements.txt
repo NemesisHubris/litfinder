@@ -6,3 +6,5 @@ pyvirtualdisplay
 dnspython
 pyautogui
 seleniumbase
+gunicorn
+python-xlib

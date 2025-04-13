@@ -32,6 +32,7 @@ DOCKERMODE = string_to_bool(os.getenv("DOCKERMODE", "false"))
 _CUSTOM_DNS = os.getenv("CUSTOM_DNS", "").strip()
 USE_DOH = string_to_bool(os.getenv("USE_DOH", "false"))
 BYPASS_RELEASE_INACTIVE_MIN = int(os.getenv("BYPASS_RELEASE_INACTIVE_MIN", "5"))
+APP_ENV = os.getenv("APP_ENV", "prod").lower()
 # Logging settings
 LOG_FILE = LOG_DIR / "cwa-bookd-downloader.log"
 

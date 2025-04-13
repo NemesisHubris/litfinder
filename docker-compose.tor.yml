@@ -9,6 +9,7 @@ services:
       FLASK_DEBUG: false
       ENABLE_TOR: true
       TZ: America/New_York
+      APP_ENV: prod
     ports:
       - 8084:8084
     restart: unless-stopped

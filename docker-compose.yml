@@ -8,6 +8,9 @@ services:
       USE_BOOK_TITLE: true
       FLASK_DEBUG: false
       TZ: America/New_York
+      APP_ENV: prod
+      UID: 1000
+      GID: 100
     ports:
       - 8084:8084
     restart: unless-stopped

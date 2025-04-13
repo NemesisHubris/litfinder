@@ -10,6 +10,7 @@ services:
     environment:
       LOG_LEVEL: debug
       FLASK_DEBUG: true
-      USE_DOH: true
-      CUSTOM_DNS: cloudflare
+      APP_ENV: dev
+     # USE_DOH: true
+     # CUSTOM_DNS: cloudflare
 

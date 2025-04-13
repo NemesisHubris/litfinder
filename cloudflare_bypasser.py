@@ -21,9 +21,20 @@ logger = setup_logger(__name__)
 network.init()
 
 DRIVER = None
+DISPLAY = None
 LAST_USED = None
 LOCKED = threading.Lock()
 TENTATIVE_CURRENT_URL = None
+
+def _reset_pyautogui_display_state():
+    try:
+        import pyautogui
+        import Xlib.display
+        pyautogui._pyautogui_x11._display = (
+                    Xlib.display.Display(os.environ['DISPLAY'])
+                )
+    except Exception as e:
+        logger.warning(f"Error resetting pyautogui display state: {e}")
 
 def _is_bypassed(sb) -> bool:
     try:
@@ -78,7 +89,6 @@ def _bypass(sb, max_retries: int = MAX_RETRY) -> None:
                 sb.uc_gui_click_captcha()
             except Exception as e:
                 time.sleep(DEFAULT_SLEEP)
-                sb.reconnect(DEFAULT_SLEEP)
                 sb.uc_gui_click_captcha()
 
         if _is_bypassed(sb):
@@ -127,8 +137,8 @@ def _get(url, retry : int = MAX_RETRY):
     try:
         logger.info(f"SB_GET: {url}")
         sb = _get_driver()
-        sb.uc_open_with_disconnect(url)
-        time.sleep(1)
+        sb.uc_open_with_reconnect(url, DEFAULT_SLEEP)
+        time.sleep(DEFAULT_SLEEP)
         _bypass(sb)
         return sb.page_source
     except Exception as e:
@@ -157,27 +167,49 @@ def _init_driver():
     return driver
 
 def _get_driver():
-    global DRIVER
+    global DRIVER, DISPLAY
     global LAST_USED
     LAST_USED = time.time()
+    if env.DOCKERMODE and env.USE_CF_BYPASS and not DISPLAY:
+        from pyvirtualdisplay import Display
+        display = Display(visible=False, size=(800, 600))
+        display.start()
+        logger.info("Display started")
+        DISPLAY = display
+        time.sleep(DEFAULT_SLEEP)
+        _reset_pyautogui_display_state()
     if not DRIVER:
         return _init_driver()
     return DRIVER
 
 def _reset_driver():
     logger.info("Resetting driver...")
-    global DRIVER
+    global DRIVER, DISPLAY
     if DRIVER:
-        DRIVER.quit()
+        try:
+            DRIVER.quit()
+            DRIVER = None
+        except Exception as e:
+            logger.warning(f"Error quitting driver: {e}")
+        time.sleep(0.5)
+    if DISPLAY:
+        try:
+            DISPLAY.stop()
+            DISPLAY = None
+        except Exception as e:
+            logger.warning(f"Error stopping display: {e}")
+        time.sleep(0.5)
     try:
-        os.system("pkill -f xvfb")
+        os.system("pkill -f Xvfb")
     except Exception as e:
-        logger.warning(f"Error killing xvfb: {e}")
+        logger.warning(f"Error killing Xvfb: {e}")
+    time.sleep(0.5)
     try:
         os.system("pkill -f chrom")
     except Exception as e:
         logger.warning(f"Error killing chrom: {e}")
-    DRIVER = None
+    time.sleep(0.5)
+
 
 def _cleanup_driver():
     global LOCKED

@@ -18,7 +18,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     # UID/GID will be handled by entrypoint script, but TZ/Locale are still needed
     LANG=en_US.UTF-8 \
     LANGUAGE=en_US:en \
-    LC_ALL=en_US.UTF-8
+    LC_ALL=en_US.UTF-8 \
+    APP_ENV=prod
 
 # Set ARG for build-time expansion (FLASK_PORT), ENV for runtime access
 ENV FLASK_PORT=8084
@@ -62,6 +63,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt && \
     # Clean root's pip cache
     rm -rf /root/.cache
+
+# Add this line to grant read/execute permissions to others
+RUN chmod -R o+rx /usr/bin/chromium && \
+    chmod -R o+rx /usr/bin/chromedriver && \
+    chmod -R o+w /usr/local/lib/python3.10/site-packages/seleniumbase/drivers/
 
 # Our custom wanabe curl
 

@@ -10,7 +10,7 @@ import typing
 
 from logger import setup_logger
 from config import _SUPPORTED_BOOK_LANGUAGE, BOOK_LANGUAGE
-from env import FLASK_HOST, FLASK_PORT, FLASK_DEBUG
+from env import FLASK_HOST, FLASK_PORT, FLASK_DEBUG, APP_ENV
 import backend
 
 from models import SearchFilters
@@ -249,11 +249,12 @@ def internal_error(error: Exception) -> Union[Response, Tuple[Response, int]]:
     logger.error_trace(f"500 error: {error}")
     return jsonify({"error": "Internal server error"}), 500
 
+
 if __name__ == '__main__':
     # Register all routes with /request prefix
     register_dual_routes(app)
     
-    logger.info(f"Starting Flask application on {FLASK_HOST}:{FLASK_PORT}")
+    logger.info(f"Starting Flask application on {FLASK_HOST}:{FLASK_PORT} IN {APP_ENV} mode")
     app.run(
         host=FLASK_HOST,
         port=FLASK_PORT,

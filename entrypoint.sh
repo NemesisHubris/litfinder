@@ -38,5 +38,14 @@ change_ownership /app
 change_ownership /var/log/cwa-book-downloader
 change_ownership /cwa-book-ingest
 
-# Switch to the user (either newly created or existing) and execute the main command
-exec sudo -E -u "$USERNAME" python3 -m app 
+# Set the command to run based on the environment
+is_prod=$(echo "$APP_ENV" | tr '[:upper:]' '[:lower:]')
+if [ "$is_prod" = "prod" ]; then 
+    command="gunicorn -b 0.0.0.0:${FLASK_PORT:-8084} app:app"
+else
+    command="python3 app.py"
+fi
+
+echo "Running command: '$command' as '$USERNAME' in '$APP_ENV' mode"
+
+exec sudo -E -u "$USERNAME" $command

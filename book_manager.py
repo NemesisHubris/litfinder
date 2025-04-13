@@ -339,7 +339,7 @@ def _get_download_url(link: str, title: str) -> str:
                 if countdown:
                     sleep_time = int(countdown[0].text)
                     logger.info(f"Waiting {sleep_time}s for {title}")
-                    time.sleep(sleep_time + 5)
+                    time.sleep(sleep_time)
                     url = _get_download_url(link, title)
             else:
                 url = download_links[0]['href']
