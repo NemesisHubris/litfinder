@@ -4,6 +4,7 @@ import socket
 from urllib.parse import urlparse
 import threading
 import env
+from env import LOG_DIR, DEBUG
 
 # --- SeleniumBase Import ---
 from seleniumbase import Driver
@@ -99,8 +100,16 @@ def _bypass(sb, max_retries: int = MAX_RETRY) -> None:
 def _get_chromium_args():
     
     arguments = [
-        "-no-sandbox",
+        "--no-sandbox",
     ]
+    
+    # Conditionally add verbose logging arguments
+    if DEBUG:
+        arguments.extend([
+            "--enable-logging", # Enable Chrome browser logging
+            "--v=1",            # Set verbosity level for Chrome logs
+            "--log-file=" + str(LOG_DIR / "chrome_browser.log")
+        ])
 
     # Add proxy settings if configured
     if PROXIES:

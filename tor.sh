@@ -74,7 +74,9 @@ fi
 
 # Get timezone from IP
 TIMEZONE=$(pyrequests https://ipapi.co/timezone) ||
+TIMEZONE=$(pyrequests http://ip-api.com/line?fields=timezone) ||
 TIMEZONE=$(pyrequests http://worldtimeapi.org/api/ip | grep -oP '"timezone":"\K[^"]+') ||
+TIMEZONE=$(pyrequests https://ip2tz.isthe.link/v2 | grep -oP '"timezone": *"\K[^"]+') ||
 true
 
 # If TIMEZONE is not set, use the default timezone
