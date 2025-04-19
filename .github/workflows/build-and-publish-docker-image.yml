@@ -51,6 +51,8 @@ jobs:
           context: .
           target: cwa-bd
           push: true
+          build-args: |
+            BUILD_VERSION=$(date +'%Y%m%d')-${{ github.sha }}
           tags: ${{ steps.meta-main.outputs.tags }}
           labels: ${{ steps.meta-main.outputs.labels }}
 
@@ -82,6 +84,8 @@ jobs:
           context: .
           target: cwa-bd-tor
           push: true
+          build-args: |
+            BUILD_VERSION=$(date +'%Y%m%d')-${{ github.sha }}
           tags: ${{ steps.meta-tor.outputs.tags }}
           labels: ${{ steps.meta-tor.outputs.labels }}
 

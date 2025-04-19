@@ -1,5 +1,18 @@
 #!/bin/bash
+LOG_DIR=${LOG_ROOT:-/var/log/}/cwa-book-downloader
+mkdir -p $LOG_DIR
+LOG_FILE=${LOG_DIR}/cwa-bd_tor.log
+
+exec 3>&1 4>&2
+exec > >(tee -a $LOG_FILE) 2>&1
+echo "Starting tor script"
+echo "Log file: $LOG_FILE"
+
+set +x
 set -e
+
+echo "Build version: $BUILD_VERSION"
+
 echo "[*] Installing Tor and dependencies..."
 echo "[*] Writing Tor transparent proxy config..."
 
@@ -55,6 +68,7 @@ timeout 300 bash -c '
 
 echo "[✓] Tor is ready."
 
+sleep 5
 # Check if outgoing IP is using Tor
 echo "[*] Verifying Tor connectivity..."
 RESULT=$(pyrequests https://check.torproject.org/api/ip)
@@ -73,10 +87,11 @@ fi
 # Then set the timezone
 
 # Get timezone from IP
-TIMEZONE=$(pyrequests https://ipapi.co/timezone) ||
-TIMEZONE=$(pyrequests http://ip-api.com/line?fields=timezone) ||
-TIMEZONE=$(pyrequests http://worldtimeapi.org/api/ip | grep -oP '"timezone":"\K[^"]+') ||
-TIMEZONE=$(pyrequests https://ip2tz.isthe.link/v2 | grep -oP '"timezone": *"\K[^"]+') ||
+sleep 1
+TIMEZONE=$(pyrequests https://ipapi.co/timezone) || \
+TIMEZONE=$(pyrequests http://ip-api.com/line?fields=timezone) || \
+TIMEZONE=$(pyrequests http://worldtimeapi.org/api/ip | grep -oP '"timezone":"\K[^"]+') || \
+TIMEZONE=$(pyrequests https://ip2tz.isthe.link/v2 | grep -oP '"timezone": *"\K[^"]+') || \
 true
 
 # If TIMEZONE is not set, use the default timezone

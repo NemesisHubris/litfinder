@@ -9,6 +9,9 @@ echo "Starting entrypoint script"
 echo "Log file: $LOG_FILE"
 set -e
 
+# Print build version
+echo "Build version: $BUILD_VERSION"
+
 # Configure timezone
 if [ "$TZ" ]; then
     echo "Setting timezone to $TZ"

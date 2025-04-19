@@ -1,6 +1,10 @@
 # Use python-slim as the base image
 FROM python:3.10-slim AS base
 
+# Add build argument for version
+ARG BUILD_VERSION
+ENV BUILD_VERSION=${BUILD_VERSION}
+
 # Set shell to bash with pipefail option
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -107,7 +111,7 @@ CMD ["/app/entrypoint.sh"]
 
 FROM base AS cwa-bd-tor
 
-ENV ENABLE_TOR=true
+ENV USING_TOR=true
 
 # Install Tor and dependencies
 RUN apt-get update && \
@@ -118,9 +122,6 @@ RUN apt-get update && \
     apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
-
-# Tor configuration is handled by entrypoint/script now or permissions set earlier
-# RUN chmod +x /app/tor.sh # This is removed as it's done in the base stage setup
 
 # Override the default command to run Tor
 CMD ["/app/tor.sh"]

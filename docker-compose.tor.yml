@@ -7,8 +7,8 @@ services:
       BOOK_LANGUAGE: en
       USE_BOOK_TITLE: true
       FLASK_DEBUG: false
-      ENABLE_TOR: true
       TZ: America/New_York
+      USING_TOR: true
       APP_ENV: prod
     cap_add:
       - NET_ADMIN
