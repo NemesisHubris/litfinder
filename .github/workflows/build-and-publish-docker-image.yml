@@ -18,6 +18,9 @@ jobs:
       attestations: write
       id-token: write
     steps:
+      - name: Get current date
+        id: date
+        run: echo "::set-output name=date::$(date +'%Y-%m-%d')"
       - name: Checkout repository
         uses: actions/checkout@v4
       - name: Log in to the Container registry
@@ -52,7 +55,7 @@ jobs:
           target: cwa-bd
           push: true
           build-args: |
-            BUILD_VERSION=$(date +'%Y%m%d')-${{ github.sha }}
+            BUILD_VERSION=${{ steps.date.outputs.date }}-${{ github.sha }}
           tags: ${{ steps.meta-main.outputs.tags }}
           labels: ${{ steps.meta-main.outputs.labels }}
 
@@ -85,7 +88,7 @@ jobs:
           target: cwa-bd-tor
           push: true
           build-args: |
-            BUILD_VERSION=$(date +'%Y%m%d')-${{ github.sha }}
+            BUILD_VERSION=${{ steps.date.outputs.date }}-${{ github.sha }}
           tags: ${{ steps.meta-tor.outputs.tags }}
           labels: ${{ steps.meta-tor.outputs.labels }}
 
