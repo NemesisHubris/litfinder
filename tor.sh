@@ -32,13 +32,23 @@ EOF
 echo "[*] Starting Tor..."
 service tor start
 
+# Wait a bit to ensure Tor has bootstrapped
+echo "[*] Waiting for Tor to finish bootstrapping... (up to 5 minutes)"
+timeout 300 bash -c '
+  while ! grep -q "Bootstrapped 100%" <(tail -n 20 -F /var/log/tor/notices.log 2>/dev/null); do
+    printf "\r\033[KCurrent log: %s" "$(tail -n 1 /var/log/tor/notices.log 2>/dev/null)"
+    sleep 1
+  done
+  # Print a newline when finished.
+  echo ""
+'
+echo "[✓] Tor is ready."
+
+
 echo "[*] Setting up iptables rules..."
 
 iptables -F
 iptables -t nat -F
-
-# Don't redirect Tor's own traffic
-iptables -t nat -A OUTPUT -m owner --uid-owner debian-tor -j RETURN
 
 # Allow loopback
 iptables -t nat -A OUTPUT -o lo -j RETURN
@@ -54,19 +64,6 @@ iptables -t nat -A OUTPUT -p udp --dport 53 ! -d 127.0.0.1 -j DNAT --to-destinat
 iptables -t nat -A OUTPUT -p tcp --dport 53 ! -d 127.0.0.1 -j DNAT --to-destination 127.0.0.1:53
 
 echo "[✓] Transparent Tor routing enabled."
-
-# Wait a bit to ensure Tor has bootstrapped
-echo "[*] Waiting for Tor to finish bootstrapping... (up to 5 minutes)"
-timeout 300 bash -c '
-  while ! grep -q "Bootstrapped 100%" <(tail -n 20 -F /var/log/tor/notices.log 2>/dev/null); do
-    printf "\r\033[KCurrent log: %s" "$(tail -n 1 /var/log/tor/notices.log 2>/dev/null)"
-    sleep 1
-  done
-  # Print a newline when finished.
-  echo ""
-'
-
-echo "[✓] Tor is ready."
 
 sleep 5
 # Check if outgoing IP is using Tor
