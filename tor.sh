@@ -11,6 +11,8 @@ echo "Log file: $LOG_FILE"
 set +x
 set -e
 
+echo "[*] Running tor script..."
+
 echo "Build version: $BUILD_VERSION"
 
 echo "[*] Installing Tor and dependencies..."
@@ -116,5 +118,4 @@ else
 fi
 
 # Run the entrypoint script
-echo "[*] Running entrypoint script..."
-./entrypoint.sh
+echo "[*] End of tor script"

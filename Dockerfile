@@ -131,4 +131,4 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Override the default command to run Tor
-CMD ["/app/tor.sh"]
+CMD ["/app/entrypoint.sh"]

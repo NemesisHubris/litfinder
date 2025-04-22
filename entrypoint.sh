@@ -6,6 +6,13 @@ LOG_FILE=${LOG_DIR}/cwa-bd_entrypoint.log
 # Cleanup any existing files or folders in the log directory
 rm -rf $LOG_DIR/*
 
+
+(
+if [ "$USING_TOR" = "true" ]; then
+    ./tor.sh
+fi
+)
+
 exec 3>&1 4>&2
 exec > >(tee -a $LOG_FILE) 2>&1
 echo "Starting entrypoint script"
