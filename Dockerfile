@@ -79,7 +79,7 @@ RUN chmod -R o+rx /usr/bin/chromium && \
 
 # Our custom wanabe curl
 RUN echo "#!/bin/sh" > /usr/local/bin/pyrequests && \
-    echo 'python -c "import sys, requests; url=sys.argv[1]; r=requests.get(url, timeout=10); print(r.text); sys.exit(0) if r.ok else sys.exit(1)" "$@"' \
+    echo 'python -c "import sys, requests; url=sys.argv[1]; r=requests.get(url, timeout=60); print(r.text); sys.exit(0) if r.ok else sys.exit(1)" "$@"' \
       >> /usr/local/bin/pyrequests && \
       chmod +x /usr/local/bin/pyrequests
 
@@ -100,7 +100,7 @@ EXPOSE ${FLASK_PORT}
 
 # Add healthcheck for container status
 # This will run as root initially, but check localhost which should work if the app binds correctly.
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=60s --timeout=60s --start-period=60s --retries=3 \
     CMD pyrequests http://localhost:${FLASK_PORT}/request/api/status || exit 1
 
 # Use dumb-init as the entrypoint to handle signals properly

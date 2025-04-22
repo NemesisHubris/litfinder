@@ -108,6 +108,18 @@ fi
 # Add environment variables (redacting sensitive info)
 env | grep -v -E "(AA_DONATOR_KEY)" | sort > "$LOG_DIR/environment.txt"
 
+echo "--- HTTPBin ---" > $LOG_DIR/network_info.txt
+pyrequests https://httpbin.org/get >> $LOG_DIR/network_info.txt
+ehco ""
+echo "--- HowsMySSL ---" >> $LOG_DIR/network_info.txt
+pyrequests https://www.howsmyssl.com/a/check >> $LOG_DIR/network_info.txt
+ehco ""
+echo "--- IPInfo ---" >> $LOG_DIR/network_info.txt
+pyrequests https://ipinfo.io >> $LOG_DIR/network_info.txt
+ehco ""
+echo "--- Cloudflare Trace ---" >> $LOG_DIR/network_info.txt
+pyrequests https://1.1.1.1/cdn-cgi/trace >> $LOG_DIR/network_info.txt
+
 # Create the zip file directly from LOG_DIR
 ln -s "$LOG_DIR" /tmp/$OUTPUT_FILE_NAME
 (cd /tmp && zip -r "$OUTPUT_FILE" $OUTPUT_FILE_NAME > /dev/null 2>&1)
