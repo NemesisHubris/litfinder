@@ -6,3 +6,4 @@ dnspython
 gunicorn
 python-xlib
 psutil
+emoji
