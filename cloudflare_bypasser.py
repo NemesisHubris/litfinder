@@ -72,7 +72,7 @@ def _is_bypassed(sb, escape_emojis : bool = True) -> bool:
         # Detect if there is an emoji in the page, any utf8 emoji, if so we are probably bypassed
         if escape_emojis:
             import emoji
-            emoji_list = emoji.emoji_list(text)
+            emoji_list = emoji.emoji_list(body)
             if len(emoji_list) >= 3:
                 logger.debug(f"Detected emoji in page, we are probably bypassed len: {len(emoji_list)}")
                 return True
@@ -274,9 +274,8 @@ def _get_chromium_args():
                     except socket.gaierror:
                         logger.warning(f"Could not resolve DoH hostname: {doh_hostname}")
             elif CUSTOM_DNS:
-                resolver_rules = [f"MAP * {dns_server}" for dns_server in CUSTOM_DNS]
-                if resolver_rules:
-                    arguments.append(f'--host-resolver-rules={",".join(resolver_rules)}') 
+                arguments.append(f'--dns-server="{",".join(CUSTOM_DNS)}"')
+                arguments.append(f'--disable-features=DnsOverHttps')
     except Exception as e:
         logger.error_trace(f"Error configuring DNS settings: {e}")
     return arguments

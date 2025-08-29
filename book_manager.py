@@ -169,8 +169,8 @@ def _parse_book_info_page(soup: BeautifulSoup, book_id: str) -> BookInfo:
 
     data = soup.find_all("div", {"class": "main-inner"})[0].find_next("div")
     divs = list(data.children)
-    format = divs[13].text.split(" · ")[1].strip().lower()
-    size = divs[13].text.split(" · ")[2].strip().lower()
+    format = divs[13].text.split(" · ")[-6].strip().lower()
+    size = divs[13].text.split(" · ")[-5].strip().lower()
 
     every_url = soup.find_all("a")
     slow_urls_no_waitlist = set()

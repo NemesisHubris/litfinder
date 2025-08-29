@@ -36,16 +36,16 @@ logger.info(f"CROSS_FILE_SYSTEM: {CROSS_FILE_SYSTEM}")
 _custom_dns = env._CUSTOM_DNS.lower().strip()
 _doh_server = ""
 if _custom_dns == "google":
-    CUSTOM_DNS = ["8.8.8.8", "8.8.4.4", "2001:4860:4860::8888", "2001:4860:4860::8844"]
+    CUSTOM_DNS = ["8.8.8.8", "8.8.4.4", "2001:4860:4860:0000:0000:0000:0000:8888", "2001:4860:4860:0000:0000:0000:0000:8844"]
     _doh_server = "https://dns.google/dns-query"
 elif _custom_dns == "quad9":
-    CUSTOM_DNS = ["9.9.9.9", "149.112.112.112", "2620:fe::fe", "26620:fe::9"]
+    CUSTOM_DNS = ["9.9.9.9", "149.112.112.112", "2620:00fe:0000:0000:0000:0000:0000:00fe", "2620:00fe:0000:0000:0000:0000:0000:0009"]
     _doh_server = "https://dns.quad9.net/dns-query"
 elif _custom_dns == "cloudflare":
-    CUSTOM_DNS = ["1.1.1.1", "1.0.0.1", "2606:4700:4700::1111", "2606:4700:4700::1001"]
+    CUSTOM_DNS = ["1.1.1.1", "1.0.0.1", "2606:4700:4700:0000:0000:0000:0000:1111", "2606:4700:4700:0000:0000:0000:0000:1001"]
     _doh_server = "https://cloudflare-dns.com/dns-query"
 elif _custom_dns == "opendns":
-    CUSTOM_DNS = ["208.67.222.222", "208.67.220.220", "2620:119:35::35", "2620:119:53::53"]
+    CUSTOM_DNS = ["208.67.222.222", "208.67.220.220", "2620:0119:0035:0000:0000:0000:0000:0035", "2620:0119:0053:0000:0000:0000:0000:0053"]
     _doh_server = "https://doh.opendns.com/dns-query"
 else:
     _custom_dns_ip = _custom_dns.split(",")

@@ -15,7 +15,8 @@
         "LOG_ROOT": "/tmp/cwa-book-downloader",
         "ENABLE_LOGGING": "true",
         "DOCKERMODE": "false",
-        "DEBUG": "true"
+        "DEBUG": "true",
+        "CUSTOM_DNS": "google",
       },
     },
     {
