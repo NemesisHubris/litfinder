@@ -77,6 +77,10 @@ try:
 except ImportError as e:
     logger.warning(f"Failed to import plugin modules: {e}")
 
+# Migrate legacy security settings if needed
+from shelfmark.config.security import _migrate_security_settings
+_migrate_security_settings()
+
 # Start download coordinator
 backend.start()
 
@@ -156,12 +160,13 @@ def get_auth_mode() -> str:
 
     try:
         security_config = load_config_file("security")
-        # 1. Check for explicit CWA auth (CWA_DB_PATH is pre-validated at startup)
-        if security_config.get("USE_CWA_AUTH") and CWA_DB_PATH:
+        auth_mode = security_config.get("AUTH_METHOD", "none")
+        if auth_mode == "cwa" and CWA_DB_PATH:
             return "cwa"
-        # 2. Check for built-in credentials
-        if security_config.get("BUILTIN_USERNAME") and security_config.get("BUILTIN_PASSWORD_HASH"):
+        if auth_mode == "builtin" and security_config.get("BUILTIN_USERNAME") and security_config.get("BUILTIN_PASSWORD_HASH"):
             return "builtin"
+        if auth_mode == "proxy" and security_config.get("PROXY_AUTH_USER_HEADER"):
+            return "proxy"
     except Exception:
         pass
 
@@ -237,6 +242,66 @@ app.config.update(
 
 logger.info(f"Session cookie secure setting: {SESSION_COOKIE_SECURE} (from env: {SESSION_COOKIE_SECURE_ENV})")
 
+@app.before_request
+def proxy_auth_middleware():
+    """
+    Middleware to handle proxy authentication.
+    
+    When AUTH_METHOD is set to "proxy", this middleware automatically
+    authenticates users based on headers set by the reverse proxy.
+    """
+    auth_mode = get_auth_mode()
+    
+    # Only run for proxy auth mode
+    if auth_mode != "proxy":
+        return None
+    
+    # Skip for public endpoints that don't need auth
+    if request.path == '/api/health':
+        return None
+
+    from shelfmark.core.settings_registry import load_config_file
+
+    try:
+        security_config = load_config_file("security")
+        user_header = security_config.get("PROXY_AUTH_USER_HEADER", "X-Auth-User")
+
+        # Extract username from proxy header
+        username = request.headers.get(user_header)
+
+        if not username:
+            if request.path.startswith('/api/auth/'):
+                return None
+
+            logger.warning(f"Proxy auth enabled but no username found in header '{user_header}'")
+            return jsonify({"error": "Authentication required. Proxy header not set."}), 401
+        
+        # Check if settings access should be restricted to admins
+        restrict_to_admin = security_config.get("PROXY_AUTH_RESTRICT_SETTINGS_TO_ADMIN", False)
+        is_admin = True  # Default to admin if not restricting
+        
+        if restrict_to_admin:
+            admin_group_header = security_config.get("PROXY_AUTH_ADMIN_GROUP_HEADER", "X-Auth-Groups")
+            admin_group_name = security_config.get("PROXY_AUTH_ADMIN_GROUP_NAME", "admins")
+            
+            # Extract groups from proxy header (can be comma or pipe separated)
+            groups_header = request.headers.get(admin_group_header, "")
+            user_groups_delimiter = "," if "," in groups_header else "|"
+            user_groups = [g.strip() for g in groups_header.split(user_groups_delimiter) if g.strip()]
+            
+            is_admin = admin_group_name in user_groups
+        
+        # Create or update session
+        session['user_id'] = username
+        session['is_admin'] = is_admin
+        session.permanent = False
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"Proxy auth middleware error: {e}")
+        return jsonify({"error": "Authentication error"}), 500
+
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -254,6 +319,25 @@ def login_required(f):
         # Check if user has a valid session
         if 'user_id' not in session:
             return jsonify({"error": "Unauthorized"}), 401
+
+        # Check admin access for settings endpoints (proxy and CWA modes)
+        if auth_mode in ("proxy", "cwa") and (request.path.startswith('/api/settings') or request.path.startswith('/api/onboarding')):
+            from shelfmark.core.settings_registry import load_config_file
+
+            try:
+                security_config = load_config_file("security")
+
+                if auth_mode == "proxy":
+                    restrict_to_admin = security_config.get("PROXY_AUTH_RESTRICT_SETTINGS_TO_ADMIN", False)
+                else:
+                    restrict_to_admin = security_config.get("CWA_RESTRICT_SETTINGS_TO_ADMIN", False)
+
+                if restrict_to_admin and not session.get('is_admin', False):
+                    return jsonify({"error": "Admin access required"}), 403
+
+            except Exception as e:
+                logger.error(f"Admin access check error: {e}")
+                return jsonify({"error": "Internal Server Error"}), 500
 
         return f(*args, **kwargs)
     return decorated_function
@@ -870,6 +954,10 @@ def api_login() -> Union[Response, Tuple[Response, int]]:
         if not data:
             return jsonify({"error": "No data provided"}), 400
 
+        auth_mode = get_auth_mode()
+        if auth_mode == "proxy":
+            return jsonify({"error": "Proxy authentication is enabled"}), 401
+
         username = data.get('username', '').strip()
         password = data.get('password', '')
         remember_me = data.get('remember_me', False)
@@ -885,8 +973,6 @@ def api_login() -> Union[Response, Tuple[Response, int]]:
             return jsonify({
                 "error": f"Account temporarily locked due to multiple failed login attempts. Try again in {int(remaining_time)} minutes."
             }), 429
-
-        auth_mode = get_auth_mode()
 
         # If no authentication is configured, authentication always succeeds
         if auth_mode == "none":
@@ -964,15 +1050,27 @@ def api_login() -> Union[Response, Tuple[Response, int]]:
 def api_logout() -> Union[Response, Tuple[Response, int]]:
     """
     Logout endpoint that clears the session.
+    For proxy auth, returns the logout URL if configured.
     
     Returns:
-        flask.Response: JSON with success status.
+        flask.Response: JSON with success status and optional logout_url.
     """
+    from shelfmark.core.settings_registry import load_config_file
+    
     try:
+        auth_mode = get_auth_mode()
         ip_address = get_client_ip()
         username = session.get('user_id', 'unknown')
         session.clear()
         logger.info(f"Logout successful for user '{username}' from IP {ip_address}")
+        
+        # For proxy auth, include logout URL if configured
+        if auth_mode == "proxy":
+            security_config = load_config_file("security")
+            logout_url = security_config.get("PROXY_AUTH_LOGOUT_URL", "")
+            if logout_url:
+                return jsonify({"success": True, "logout_url": logout_url})
+        
         return jsonify({"success": True})
     except Exception as e:
         logger.error_trace(f"Logout error: {e}")
@@ -990,6 +1088,7 @@ def api_auth_check() -> Union[Response, Tuple[Response, int]]:
     from shelfmark.core.settings_registry import load_config_file
 
     try:
+        security_config = load_config_file("security")
         auth_mode = get_auth_mode()
 
         # If no authentication is configured, access is allowed (full admin)
@@ -1007,25 +1106,37 @@ def api_auth_check() -> Union[Response, Tuple[Response, int]]:
         # Determine admin status for settings access
         # - Built-in auth: single user is always admin
         # - CWA auth: check RESTRICT_SETTINGS_TO_ADMIN setting
+        # - Proxy auth: check PROXY_AUTH_RESTRICT_SETTINGS_TO_ADMIN setting
         if auth_mode == "builtin":
             is_admin = True
         elif auth_mode == "cwa":
-            security_config = load_config_file("security")
-            restrict_to_admin = security_config.get("RESTRICT_SETTINGS_TO_ADMIN", False)
+            restrict_to_admin = security_config.get("CWA_RESTRICT_SETTINGS_TO_ADMIN", False)
             if restrict_to_admin:
                 is_admin = session.get('is_admin', False)
             else:
                 # All authenticated CWA users can access settings
                 is_admin = True
+        elif auth_mode == "proxy":
+            restrict_to_admin = security_config.get("PROXY_AUTH_RESTRICT_SETTINGS_TO_ADMIN", False)
+            is_admin = session.get('is_admin', not restrict_to_admin)
         else:
             is_admin = False
 
-        return jsonify({
+        response_data = {
             "authenticated": is_authenticated,
             "auth_required": True,
             "auth_mode": auth_mode,
-            "is_admin": is_admin if is_authenticated else False
-        })
+            "is_admin": is_admin if is_authenticated else False,
+            "username": session.get('user_id') if is_authenticated else None
+        }
+        
+        # Add logout URL for proxy auth if configured
+        if auth_mode == "proxy" and security_config.get("PROXY_AUTH_USER_HEADER"):
+            logout_url = security_config.get("PROXY_AUTH_LOGOUT_URL", "")
+            if logout_url:
+                response_data["logout_url"] = logout_url
+        
+        return jsonify(response_data)
     except Exception as e:
         logger.error_trace(f"Auth check error: {e}")
         return jsonify({

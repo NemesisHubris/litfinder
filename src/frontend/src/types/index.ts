@@ -181,6 +181,7 @@ export interface AuthResponse {
   auth_required?: boolean;
   is_admin?: boolean;
   error?: string;
+  logout_url?: string;
 }
 
 // Type guard to check if a book is from a metadata provider

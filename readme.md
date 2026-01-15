@@ -146,9 +146,17 @@ If you need Cloudflare bypass with the Lite image, configure an external resolve
 
 ## 🔐 Authentication
 
-Authentication is optional but recommended for shared or exposed instances. Enable in Settings.
+Authentication is optional but recommended for shared or exposed instances. Three authentication methods are available in Settings:
 
-**Alternative**: If you're running Calibre-Web, you can reuse its user database by mounting it:
+**1. Single Username/Password**
+
+**2. Proxy (Forward) Authentication**
+
+Proxy auth trusts headers set by your reverse proxy (e.g. `X-Auth-User`). Ensure Shelfmark is not directly exposed, and configure your proxy to strip/overwrite these headers for all inbound requests.
+
+**3. Calibre-Web Database**
+
+If you're running Calibre-Web, you can reuse its user database by mounting it:
 
 ```yaml
 volumes:
