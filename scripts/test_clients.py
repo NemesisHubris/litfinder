@@ -23,6 +23,7 @@ Web UIs:
     - Deluge:       http://localhost:8112
     - NZBGet:       http://localhost:6789
     - SABnzbd:      http://localhost:8085
+    - rTorrent:     http://localhost:8000 (web ui http://localhost:8089 via ruTorrent)
 
 Prerequisites (for running this script locally):
     pip install requests transmission-rpc deluge-client qbittorrent-api
@@ -53,6 +54,7 @@ First-Time Setup:
 
 import sys
 import time
+from xmlrpc import client
 
 # Test configuration - matches docker-compose.test-clients.yml
 CONFIG = {
@@ -82,6 +84,9 @@ CONFIG = {
         "port": 58846,
         "username": "admin",
         "password": "admin",
+    },
+    "rtorrent": {
+        "url": "http://localhost:8000/RPC2",
     },
 }
 
@@ -387,6 +392,80 @@ def test_deluge():
             print("  3. Or access Web UI at http://localhost:8112 (password: deluge)")
         return False
 
+def test_rtorrent():
+    """Test rTorrent connection."""
+    print("\n" + "=" * 50)
+    print("Testing rTorrent")
+    print("=" * 50)
+
+    try:
+        import xmlrpc.client
+
+        url = "http://localhost:8000/RPC2"
+        client = xmlrpc.client.ServerProxy(url)
+
+        # Test connection
+        version = client.system.library_version()
+        print(f"  Connected to rTorrent {version}")
+
+        # Get torrent list
+        torrents = client.download_list()
+        print(f"  Active torrents: {len(torrents)}")
+
+        # Test adding a torrent (then remove it)
+        print("  Testing add/remove torrent...")
+
+        label = "automated"
+
+        commands = []
+        if label:
+            commands.append(f"d.custom1.set={label}")
+
+        download_dir = "/downloads"
+        if download_dir:
+            commands.append(f"d.directory_base.set={download_dir}")
+
+        # rtorrent is weird in that it doesn't return the torrent ID/hash on add
+        client.load.start("", TEST_MAGNET, ";".join(commands))
+        
+        # but we know that it is 3b245504cf5f11bbdbe1201cea6a6bf45aee1bc0 from the magnet link
+        torrent_id = "3B245504CF5F11BBDBE1201CEA6A6BF45AEE1BC0" # rtorrent uses uppercase hashes
+        print(f"  Added test torrent: {torrent_id}")
+
+        torrent_list = client.d.multicall.filtered(
+            "",
+            "default",
+            f"equal=d.hash=,cat={torrent_id}",
+            "d.hash=",
+            "d.state=",
+            "d.completed_bytes=",
+            "d.size_bytes=",
+            "d.down.rate=",
+            "d.up.rate=",
+            "d.custom1=",
+            "d.complete=",
+        )
+        torrent = torrent_list[0]
+        if not torrent:
+            print("  ERROR: Could not find added torrent in list")
+            return False
+        
+        
+        client.d.erase(torrent_id)
+        print("  Removed test torrent")
+
+        print("  SUCCESS: rTorrent is working!")
+        return True
+
+    except ImportError:
+        print("  ERROR: xmlrpc.client not available")
+        return False
+    except Exception as e:
+        print(f"  ERROR: {e}")
+        if "Connection refused" in str(e):
+            print("  Is the container running? docker ps | grep rtorrent")
+        return False
+
 
 def main():
     print("Download Client Test Suite")
@@ -410,6 +489,7 @@ def main():
     results["qbittorrent"] = test_qbittorrent()
     results["transmission"] = test_transmission()
     results["deluge"] = test_deluge()
+    results["rtorrent"] = test_rtorrent()
 
     # Summary
     print("\n" + "=" * 50)
