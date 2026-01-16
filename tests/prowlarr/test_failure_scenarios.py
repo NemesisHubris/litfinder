@@ -13,7 +13,6 @@ from threading import Event, Thread
 from typing import List, Optional, Tuple
 from unittest.mock import MagicMock, patch, PropertyMock
 import tempfile
-import shutil
 
 import pytest
 
@@ -217,8 +216,7 @@ class TestClientErrorStates:
         assert result is None
         assert recorder.had_error
         assert "Tracker returned error" in recorder.last_message
-        assert mock_client.remove_called
-        assert mock_client.remove_with_delete  # Should delete files on error
+        assert not mock_client.remove_called
 
     def test_client_returns_error_with_complete_flag(
         self, handler, mock_client, recorder, cancel_flag, sample_task, sample_release
@@ -229,7 +227,7 @@ class TestClientErrorStates:
                 progress=100,
                 state=DownloadState.ERROR,
                 message="Download corrupted",
-                complete=True,  # Complete but errored
+                complete=True,
                 file_path=None,
             ),
         ]
@@ -250,6 +248,8 @@ class TestClientErrorStates:
 
         assert result is None
         assert recorder.had_error
+        assert recorder.last_message == "Download corrupted"
+        assert not mock_client.remove_called
 
     def test_error_without_message_uses_default(
         self, handler, mock_client, recorder, cancel_flag, sample_task, sample_release
@@ -259,7 +259,7 @@ class TestClientErrorStates:
             DownloadStatus(
                 progress=0,
                 state=DownloadState.ERROR,
-                message=None,  # No message
+                message=None,
                 complete=False,
                 file_path=None,
             ),
@@ -282,6 +282,7 @@ class TestClientErrorStates:
         assert result is None
         assert recorder.had_error
         assert recorder.last_message == "Download failed"
+        assert not mock_client.remove_called
 
 
 # =============================================================================
@@ -435,8 +436,7 @@ class TestCancellation:
 
         assert result is None
         assert "cancelled" in recorder.statuses
-        assert mock_client.remove_called
-        assert mock_client.remove_with_delete
+        assert not mock_client.remove_called
 
     def test_cancel_before_download_starts(
         self, handler, mock_client, recorder, sample_task, sample_release
@@ -461,7 +461,7 @@ class TestCancellation:
 
         assert result is None
         # Should have been cancelled quickly
-        assert mock_client.remove_called
+        assert not mock_client.remove_called
 
 
 # =============================================================================
@@ -581,12 +581,10 @@ class TestFileHandlingFailures:
         assert recorder.had_error
         assert "locate" in recorder.last_message.lower()
 
-    def test_permission_denied_on_move(
+    def test_usenet_returns_original_path(
         self, handler, mock_client, recorder, cancel_flag, sample_task
     ):
-        """Handler should report permission errors during file staging (usenet only - torrents skip staging)."""
-        # Use usenet protocol - torrents skip staging and return original path directly
-        # Default usenet action is "move", so we mock shutil.move
+        """Usenet downloads return the original client path without staging."""
         usenet_release = {
             "guid": "test-task-123",
             "title": "Test Book",
@@ -607,8 +605,6 @@ class TestFileHandlingFailures:
         with tempfile.TemporaryDirectory() as tmpdir:
             source_file = Path(tmpdir) / "source.epub"
             source_file.write_text("test content")
-            staging_dir = Path(tmpdir) / "staging"
-            staging_dir.mkdir()
 
             mock_client.get_download_path = lambda x: str(source_file)
 
@@ -619,11 +615,12 @@ class TestFileHandlingFailures:
                 "shelfmark.release_sources.prowlarr.handler.get_client",
                 return_value=mock_client,
             ), patch(
-                "shelfmark.release_sources.prowlarr.handler.shutil.move",
-                side_effect=PermissionError("Permission denied"),
+                "shelfmark.release_sources.prowlarr.handler.remove_release",
             ), patch(
-                "shelfmark.download.orchestrator.get_staging_dir",
-                return_value=staging_dir,
+                "shelfmark.download.staging.get_staging_dir",
+            ) as mock_get_staging, patch(
+                "shelfmark.release_sources.prowlarr.handler.POLL_INTERVAL",
+                0.01,
             ):
                 result = handler.download(
                     task=sample_task,
@@ -632,9 +629,9 @@ class TestFileHandlingFailures:
                     status_callback=recorder.status_callback,
                 )
 
-        assert result is None
-        assert recorder.had_error
-        assert "permission" in recorder.last_message.lower()
+        assert result == str(source_file)
+        assert not recorder.had_error
+        mock_get_staging.assert_not_called()
 
 
 # =============================================================================
@@ -675,7 +672,7 @@ class TestProgressCallbacks:
                 "shelfmark.release_sources.prowlarr.handler.get_client",
                 return_value=mock_client,
             ), patch(
-                "shelfmark.download.orchestrator.get_staging_dir",
+                "shelfmark.download.staging.get_staging_dir",
                 return_value=staging_dir,
             ), patch(
                 "shelfmark.release_sources.prowlarr.handler.POLL_INTERVAL",
@@ -761,7 +758,7 @@ class TestStatusMessages:
                 "shelfmark.release_sources.prowlarr.handler.get_client",
                 return_value=mock_client,
             ), patch(
-                "shelfmark.download.orchestrator.get_staging_dir",
+                "shelfmark.download.staging.get_staging_dir",
                 return_value=staging_dir,
             ), patch(
                 "shelfmark.release_sources.prowlarr.handler.POLL_INTERVAL",
@@ -820,7 +817,7 @@ class TestStatusMessages:
                 "shelfmark.release_sources.prowlarr.handler.get_client",
                 return_value=mock_client,
             ), patch(
-                "shelfmark.download.orchestrator.get_staging_dir",
+                "shelfmark.download.staging.get_staging_dir",
                 return_value=staging_dir,
             ), patch(
                 "shelfmark.release_sources.prowlarr.handler.POLL_INTERVAL",
@@ -851,7 +848,7 @@ class TestErrorCleanup:
     def test_cleanup_on_poll_exception(
         self, handler, mock_client, recorder, cancel_flag, sample_task, sample_release
     ):
-        """Download should be removed from client after polling exception."""
+        """Torrent downloads should not be removed after polling exception."""
         call_count = 0
 
         def exploding_get_status(download_id):
@@ -887,8 +884,7 @@ class TestErrorCleanup:
             )
 
         assert result is None
-        assert mock_client.remove_called
-        assert mock_client.remove_with_delete
+        assert not mock_client.remove_called
 
     def test_cleanup_continues_even_if_remove_fails(
         self, handler, mock_client, recorder, cancel_flag, sample_task, sample_release
@@ -904,14 +900,22 @@ class TestErrorCleanup:
             ),
         ]
 
+        remove_attempted = False
+
         def failing_remove(download_id, delete_files=False):
+            nonlocal remove_attempted
+            remove_attempted = True
             raise ConnectionError("Client not responding")
 
         mock_client.remove = failing_remove
 
+        usenet_release = dict(sample_release)
+        usenet_release["protocol"] = "usenet"
+        usenet_release["downloadUrl"] = "https://indexer.example.com/download/123"
+
         with patch(
             "shelfmark.release_sources.prowlarr.handler.get_release",
-            return_value=sample_release,
+            return_value=usenet_release,
         ), patch(
             "shelfmark.release_sources.prowlarr.handler.get_client",
             return_value=mock_client,
@@ -926,3 +930,4 @@ class TestErrorCleanup:
 
         assert result is None
         assert recorder.had_error
+        assert remove_attempted

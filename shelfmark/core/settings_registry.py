@@ -24,7 +24,7 @@ class FieldBase:
     env_supported: bool = True            # Whether this setting can be set via ENV var (False = UI-only)
     disabled: bool = False                # Whether field is disabled/greyed out
     disabled_reason: str = ""             # Explanation shown when disabled
-    show_when: Optional[Dict[str, Any]] = None  # Conditional visibility: {"field": "key", "value": "expected"} or {"field": "key", "notEmpty": True}
+    show_when: Optional[Dict[str, Any] | List[Dict[str, Any]]] = None  # Conditional visibility: {"field": "key", "value": "expected"} or list of conditions
     disabled_when: Optional[Dict[str, Any]] = None  # Conditional disable: {"field": "key", "value": "expected", "reason": "..."}
     requires_restart: bool = False        # Whether changing this setting requires a container restart
     universal_only: bool = False          # Only show in Universal search mode (hide in Direct mode)
@@ -71,6 +71,7 @@ class SelectField(FieldBase):
     """Single-choice dropdown."""
     # Options can be a list or a callable that returns a list (for lazy evaluation)
     options: Any = field(default_factory=list)  # [{value: "", label: ""}] or callable
+    filter_by_field: Optional[str] = None  # Field key whose value filters options via childOf property
 
 
 @dataclass
@@ -99,10 +100,10 @@ class ActionButton:
     label: str                            # Button text
     description: str = ""                 # Help text
     style: str = "default"                # "default", "primary", "danger"
-    callback: Optional[Callable[[], Dict[str, Any]]] = None  # Returns {"success": bool, "message": str}
+    callback: Optional[Callable[..., Dict[str, Any]]] = None  # Returns {"success": bool, "message": str}
     disabled: bool = False                # Whether button is disabled/greyed out
     disabled_reason: str = ""             # Explanation shown when disabled
-    show_when: Optional[Dict[str, Any]] = None  # Conditional visibility: {"field": "key", "value": "expected"} or {"field": "key", "notEmpty": True}
+    show_when: Optional[Dict[str, Any] | List[Dict[str, Any]]] = None  # Conditional visibility: {"field": "key", "value": "expected"} or list of conditions
     disabled_when: Optional[Dict[str, Any]] = None  # Conditional disable: {"field": "key", "value": "expected", "reason": "..."}
 
     def get_field_type(self) -> str:
@@ -122,7 +123,7 @@ class HeadingField:
     description: str = ""                 # Description text (supports markdown-style links)
     link_url: str = ""                    # Optional URL for a link
     link_text: str = ""                   # Text for the link (defaults to URL if not provided)
-    show_when: Optional[Dict[str, Any]] = None  # Conditional visibility: {"field": "key", "value": "expected"} or {"field": "key", "notEmpty": True}
+    show_when: Optional[Dict[str, Any] | List[Dict[str, Any]]] = None  # Conditional visibility: {"field": "key", "value": "expected"} or list of conditions
     universal_only: bool = False          # Only show in Universal search mode (hide in Direct mode)
 
     def get_field_type(self) -> str:
@@ -562,7 +563,7 @@ def serialize_field(field: SettingsField, tab_name: str, include_value: bool = T
     """
     # HeadingField has a different structure - handle separately
     if isinstance(field, HeadingField):
-        result = {
+        result: Dict[str, Any] = {
             "key": field.key,
             "type": field.get_field_type(),
             "title": field.title,
@@ -577,7 +578,7 @@ def serialize_field(field: SettingsField, tab_name: str, include_value: bool = T
             result["universalOnly"] = True
         return result
 
-    result = {
+    result: Dict[str, Any] = {
         "key": field.key,
         "label": field.label,
         "type": field.get_field_type(),
@@ -613,6 +614,8 @@ def serialize_field(field: SettingsField, tab_name: str, include_value: bool = T
         result["options"] = options
         if field.default is not None:
             result["default"] = field.default
+        if field.filter_by_field:
+            result["filterByField"] = field.filter_by_field
     elif isinstance(field, MultiSelectField):
         # Support callable options for lazy evaluation (avoids circular imports)
         options = field.options() if callable(field.options) else field.options
@@ -628,6 +631,23 @@ def serialize_field(field: SettingsField, tab_name: str, include_value: bool = T
 
     if include_value and not isinstance(field, (ActionButton, HeadingField)):
         value = get_setting_value(field, tab_name)
+
+        # Ensure select values are serialized as strings so the frontend can
+        # reliably match against string option values.
+        if isinstance(field, SelectField) and value is not None:
+            value = str(value)
+        elif isinstance(field, MultiSelectField):
+            if value is None:
+                value = []
+            elif isinstance(value, list):
+                value = [str(v) for v in value]
+            elif isinstance(value, str):
+                # Support legacy/manual configs where MultiSelect values were saved
+                # as comma-separated strings.
+                value = [v.strip() for v in value.split(",") if v.strip()]
+            else:
+                value = []
+
         result["value"] = value if value is not None else ""
         result["fromEnv"] = is_value_from_env(field)
 
@@ -696,7 +716,7 @@ def execute_action(tab_name: str, action_key: str, current_values: Optional[Dict
                 try:
                     # Check if callback accepts current_values parameter
                     sig = inspect.signature(field.callback)
-                    if 'current_values' in sig.parameters:
+                    if "current_values" in sig.parameters:
                         return field.callback(current_values=current_values or {})
                     else:
                         return field.callback()
@@ -816,16 +836,22 @@ def update_settings(tab_name: str, values: Dict[str, Any]) -> Dict[str, Any]:
     # Save to config file
     if save_config_file(tab_name, values_to_save):
         # Refresh the config singleton so live settings take effect immediately
+        config_obj = None
         try:
-            from shelfmark.core.config import config
-            config.refresh()
+            from shelfmark.core.config import config as config_obj
+
+            config_obj.refresh()
         except ImportError:
-            pass  # Config module not yet available during initial setup
+            config_obj = None  # Config module not yet available during initial setup
 
         # Apply DNS settings changes live (network tab)
         dns_keys = {"CUSTOM_DNS", "CUSTOM_DNS_MANUAL", "USE_DOH"}
-        if tab_name == "network" and dns_keys.intersection(values_to_save.keys()):
-            _apply_dns_settings(config)
+        if (
+            config_obj is not None
+            and tab_name == "network"
+            and dns_keys.intersection(values_to_save.keys())
+        ):
+            _apply_dns_settings(config_obj)
 
         # Sync metadata provider selection when a provider's enabled state changes
         tab = get_settings_tab(tab_name)

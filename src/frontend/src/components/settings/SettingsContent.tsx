@@ -13,6 +13,7 @@ import {
   OrderableListItem,
   ActionButtonConfig,
   HeadingFieldConfig,
+  ShowWhenCondition,
 } from '../../types/settings';
 import { FieldWrapper } from './shared';
 import {
@@ -38,6 +39,24 @@ interface SettingsContentProps {
   isUniversalMode?: boolean; // Whether app is in Universal search mode
 }
 
+function evaluateShowWhenCondition(
+  showWhen: ShowWhenCondition,
+  values: Record<string, unknown>
+): boolean {
+  const currentValue = values[showWhen.field];
+
+  if (showWhen.notEmpty) {
+    if (Array.isArray(currentValue)) {
+      return currentValue.length > 0;
+    }
+    return currentValue !== undefined && currentValue !== null && currentValue !== '';
+  }
+
+  return Array.isArray(showWhen.value)
+    ? showWhen.value.includes(currentValue as string)
+    : currentValue === showWhen.value;
+}
+
 // Check if a field should be visible based on showWhen condition and search mode
 function isFieldVisible(
   field: SettingsField,
@@ -52,20 +71,11 @@ function isFieldVisible(
   const showWhen = field.showWhen;
   if (!showWhen) return true;
 
-  const currentValue = values[showWhen.field];
-
-  // Handle notEmpty condition - show when field has any non-empty value
-  if (showWhen.notEmpty) {
-    if (Array.isArray(currentValue)) {
-      return currentValue.length > 0;
-    }
-    return currentValue !== undefined && currentValue !== null && currentValue !== '';
+  if (Array.isArray(showWhen)) {
+    return showWhen.every((condition) => evaluateShowWhenCondition(condition, values));
   }
 
-  // Handle array of allowed values or single value
-  return Array.isArray(showWhen.value)
-    ? showWhen.value.includes(currentValue as string)
-    : currentValue === showWhen.value;
+  return evaluateShowWhenCondition(showWhen, values);
 }
 
 // Check if a field should be disabled based on disabledWhen condition
@@ -117,7 +127,8 @@ const renderField = (
   value: unknown,
   onChange: (value: unknown) => void,
   onAction: () => Promise<ActionResult>,
-  isDisabled: boolean
+  isDisabled: boolean,
+  allValues: Record<string, unknown> // All form values for cascading dropdown support
 ) => {
   switch (field.type) {
     case 'TextField':
@@ -156,15 +167,26 @@ const renderField = (
           disabled={isDisabled}
         />
       );
-    case 'SelectField':
+    case 'SelectField': {
+      const selectConfig = field as SelectFieldConfig;
+      // Get filter value for cascading dropdowns
+      const rawFilterValue = selectConfig.filterByField
+        ? allValues[selectConfig.filterByField]
+        : undefined;
+      const filterValue =
+        rawFilterValue === undefined || rawFilterValue === null || rawFilterValue === ''
+          ? undefined
+          : String(rawFilterValue);
       return (
         <SelectField
-          field={field as SelectFieldConfig}
+          field={selectConfig}
           value={(value as string) ?? ''}
           onChange={onChange}
           disabled={isDisabled}
+          filterValue={filterValue}
         />
       );
+    }
     case 'MultiSelectField':
       return (
         <MultiSelectField
@@ -227,24 +249,25 @@ export const SettingsContent = ({
       >
         <div className="space-y-5">
           {visibleFields.map((field) => {
-              const disabledState = getDisabledState(field, values);
-              return (
-                <FieldWrapper
-                  key={`${tab.name}-${field.key}`}
-                  field={field}
-                  disabledOverride={disabledState.disabled}
-                  disabledReasonOverride={disabledState.reason}
-                >
-                  {renderField(
-                    field,
-                    values[field.key],
-                    (v) => onChange(field.key, v),
-                    () => onAction(field.key),
-                    disabledState.disabled
-                  )}
-                </FieldWrapper>
-              );
-            })}
+            const disabledState = getDisabledState(field, values);
+            return (
+              <FieldWrapper
+                key={`${tab.name}-${field.key}`}
+                field={field}
+                disabledOverride={disabledState.disabled}
+                disabledReasonOverride={disabledState.reason}
+              >
+                {renderField(
+                  field,
+                  values[field.key],
+                  (v) => onChange(field.key, v),
+                  () => onAction(field.key),
+                  disabledState.disabled,
+                  values
+                )}
+              </FieldWrapper>
+            );
+          })}
         </div>
       </div>
 

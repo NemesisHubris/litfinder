@@ -13,11 +13,48 @@ Two approaches to preserve torrent files for seeding:
 
 import os
 import pytest
+import shutil
 import tempfile
 from pathlib import Path
+from threading import Event
 from unittest.mock import MagicMock, patch
 
 from shelfmark.core.naming import same_filesystem
+
+
+def _run_organize_post_process(
+    temp_file: Path,
+    task,
+    library: Path,
+    hardlink_enabled: bool = True,
+    same_fs: bool = True,
+):
+    from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+
+    status_cb = MagicMock()
+    cancel_flag = Event()
+
+    with patch('shelfmark.core.config.config') as mock_config, \
+         patch('shelfmark.download.postprocess.transfer.same_filesystem', return_value=same_fs):
+
+        mock_config.CUSTOM_SCRIPT = None
+        mock_config.get = MagicMock(side_effect=lambda key, default=None: {
+            "DESTINATION": str(library),
+            "FILE_ORGANIZATION": "organize",
+            "HARDLINK_TORRENTS": hardlink_enabled,
+            "HARDLINK_TORRENTS_AUDIOBOOK": hardlink_enabled,
+            "SUPPORTED_FORMATS": ["epub", "mp3"],
+        }.get(key, default))
+
+
+        result = _post_process_download(
+            temp_file=temp_file,
+            task=task,
+            cancel_flag=cancel_flag,
+            status_callback=status_cb,
+        )
+
+    return result, status_cb
 
 
 class TestStageFile:
@@ -25,13 +62,13 @@ class TestStageFile:
 
     def test_copy_mode_preserves_original(self, tmp_path):
         """copy=True preserves original file (for torrent seeding)."""
-        from shelfmark.download.orchestrator import stage_file, get_staging_dir
+        from shelfmark.download.staging import stage_file, get_staging_dir
 
         source = tmp_path / "downloads" / "book.epub"
         source.parent.mkdir()
         source.write_bytes(b"content")
 
-        with patch('shelfmark.download.orchestrator.TMP_DIR', tmp_path / "staging"):
+        with patch('shelfmark.config.env.TMP_DIR', tmp_path / "staging"):
             staged = stage_file(source, "task123", copy=True)
 
         assert staged.exists()
@@ -40,13 +77,13 @@ class TestStageFile:
 
     def test_move_mode_removes_original(self, tmp_path):
         """copy=False moves file (original deleted)."""
-        from shelfmark.download.orchestrator import stage_file
+        from shelfmark.download.staging import stage_file
 
         source = tmp_path / "downloads" / "book.epub"
         source.parent.mkdir()
         source.write_bytes(b"content")
 
-        with patch('shelfmark.download.orchestrator.TMP_DIR', tmp_path / "staging"):
+        with patch('shelfmark.config.env.TMP_DIR', tmp_path / "staging"):
             staged = stage_file(source, "task123", copy=False)
 
         assert staged.exists()
@@ -54,7 +91,7 @@ class TestStageFile:
 
     def test_handles_filename_collision(self, tmp_path):
         """Adds counter suffix on collision."""
-        from shelfmark.download.orchestrator import stage_file
+        from shelfmark.download.staging import stage_file
 
         staging = tmp_path / "staging"
         staging.mkdir()
@@ -64,7 +101,7 @@ class TestStageFile:
         source.parent.mkdir()
         source.write_bytes(b"new content")
 
-        with patch('shelfmark.download.orchestrator.TMP_DIR', staging):
+        with patch('shelfmark.config.env.TMP_DIR', staging):
             staged = stage_file(source, "task123", copy=True)
 
         assert staged.name == "book_1.epub"
@@ -128,7 +165,7 @@ class TestAtomicHardlink:
 
     def test_creates_hardlink(self, tmp_path):
         """Creates hardlink to source file."""
-        from shelfmark.download.orchestrator import _atomic_hardlink
+        from shelfmark.download.fs import atomic_hardlink as _atomic_hardlink
 
         source = tmp_path / "source.txt"
         source.write_text("content")
@@ -144,7 +181,7 @@ class TestAtomicHardlink:
 
     def test_handles_collision_with_counter(self, tmp_path):
         """Appends counter suffix when destination exists."""
-        from shelfmark.download.orchestrator import _atomic_hardlink
+        from shelfmark.download.fs import atomic_hardlink as _atomic_hardlink
 
         source = tmp_path / "source.txt"
         source.write_text("new content")
@@ -159,7 +196,7 @@ class TestAtomicHardlink:
 
     def test_multiple_collisions(self, tmp_path):
         """Increments counter until finding free slot."""
-        from shelfmark.download.orchestrator import _atomic_hardlink
+        from shelfmark.download.fs import atomic_hardlink as _atomic_hardlink
 
         source = tmp_path / "source.txt"
         source.write_text("new")
@@ -173,7 +210,7 @@ class TestAtomicHardlink:
 
     def test_preserves_extension(self, tmp_path):
         """Keeps extension when adding counter suffix."""
-        from shelfmark.download.orchestrator import _atomic_hardlink
+        from shelfmark.download.fs import atomic_hardlink as _atomic_hardlink
 
         source = tmp_path / "book.epub"
         source.write_bytes(b"epub content")
@@ -184,13 +221,33 @@ class TestAtomicHardlink:
         assert result.suffix == ".epub"
         assert result.name == "book_1.epub"
 
+    def test_falls_back_to_copy_on_permission_error(self, tmp_path, monkeypatch):
+        """Falls back to copy when hardlink is not permitted."""
+        from shelfmark.download.fs import atomic_hardlink as _atomic_hardlink
+
+        source = tmp_path / "source.txt"
+        source.write_text("content")
+        dest = tmp_path / "dest.txt"
+
+        def _raise_perm(*_args, **_kwargs):
+            raise PermissionError("hardlink not permitted")
+
+        monkeypatch.setattr(os, "link", _raise_perm)
+
+        result = _atomic_hardlink(source, dest)
+
+        assert result == dest
+        assert result.read_text() == "content"
+        assert source.exists()
+        assert os.stat(source).st_ino != os.stat(result).st_ino
+
 
 class TestAtomicMove:
     """Tests for _atomic_move() function."""
 
     def test_moves_file(self, tmp_path):
         """Moves file from source to destination."""
-        from shelfmark.download.orchestrator import _atomic_move
+        from shelfmark.download.fs import atomic_move as _atomic_move
 
         source = tmp_path / "source.txt"
         source.write_text("content")
@@ -204,7 +261,7 @@ class TestAtomicMove:
 
     def test_handles_collision(self, tmp_path):
         """Appends counter on collision."""
-        from shelfmark.download.orchestrator import _atomic_move
+        from shelfmark.download.fs import atomic_move as _atomic_move
 
         source = tmp_path / "source.txt"
         source.write_text("new")
@@ -220,7 +277,7 @@ class TestAtomicMove:
 
     def test_cross_filesystem_fallback(self):
         """Falls back to copy when cross-filesystem."""
-        from shelfmark.download.orchestrator import _atomic_move
+        from shelfmark.download.fs import atomic_move as _atomic_move
         import errno
 
         with tempfile.TemporaryDirectory() as dir1, tempfile.TemporaryDirectory() as dir2:
@@ -235,6 +292,35 @@ class TestAtomicMove:
             assert not source.exists()
             assert result.read_text() == "content"
 
+    def test_cross_filesystem_permission_fallback(self, tmp_path, monkeypatch):
+        """Falls back to copy when cross-filesystem move hits permission error."""
+        from shelfmark.download.fs import atomic_move as _atomic_move
+        import errno
+
+        source = tmp_path / "source.txt"
+        source.write_text("content")
+        dest = tmp_path / "dest.txt"
+
+        def _raise_exdev(*_args, **_kwargs):
+            raise OSError(errno.EXDEV, "Cross-device link")
+
+        def _fallback_copy(src, dst, is_move):
+            shutil.copyfile(str(src), str(dst))
+            if is_move:
+                Path(src).unlink()
+
+        monkeypatch.setattr(os, "rename", _raise_exdev)
+
+        with patch("shelfmark.download.fs.shutil.copy2", side_effect=PermissionError("no")) as mock_copy, \
+             patch("shelfmark.download.fs._perform_nfs_fallback", side_effect=_fallback_copy) as mock_fallback:
+            result = _atomic_move(source, dest)
+
+        assert result == dest
+        assert not source.exists()
+        assert dest.read_text() == "content"
+        assert mock_copy.called
+        assert mock_fallback.called
+
 
 class TestHardlinkWithLibraryMode:
     """Tests for hardlinking in library mode context."""
@@ -242,7 +328,7 @@ class TestHardlinkWithLibraryMode:
     @pytest.fixture
     def mock_config(self):
         """Mock config for library mode."""
-        with patch('shelfmark.download.orchestrator.config') as mock:
+        with patch('shelfmark.core.config.config') as mock:
             mock.get = MagicMock(side_effect=lambda key, default=None: {
                 "LIBRARY_PATH": None,
                 "LIBRARY_PATH_AUDIOBOOK": None,
@@ -270,7 +356,7 @@ class TestHardlinkWithLibraryMode:
 
     def test_transfer_file_hardlink(self, tmp_path, sample_task):
         """Single file transferred via hardlink."""
-        from shelfmark.download.orchestrator import _transfer_file_to_library
+        from shelfmark.download.postprocess.pipeline import transfer_file_to_library
 
         library = tmp_path / "library"
         library.mkdir()
@@ -283,16 +369,17 @@ class TestHardlinkWithLibraryMode:
 
         status_cb = MagicMock()
 
-        result = _transfer_file_to_library(
-            source_path=source,
-            library_base=str(library),
-            template="{Author}/{Title}",
-            metadata={"Author": "Brandon Sanderson", "Title": "Mistborn"},
-            task=sample_task,
-            temp_file=temp_file,
-            status_callback=status_cb,
-            use_hardlink=True,
-        )
+        with patch('shelfmark.config.env.TMP_DIR', temp_file.parent):
+            result = transfer_file_to_library(
+                source_path=source,
+                library_base=str(library),
+                template="{Author}/{Title}",
+                metadata={"Author": "Brandon Sanderson", "Title": "Mistborn"},
+                task=sample_task,
+                temp_file=temp_file,
+                status_callback=status_cb,
+                use_hardlink=True,
+            )
 
         assert result is not None
         result_path = Path(result)
@@ -307,7 +394,7 @@ class TestHardlinkWithLibraryMode:
 
     def test_transfer_file_move(self, tmp_path, sample_task):
         """Single file transferred via move."""
-        from shelfmark.download.orchestrator import _transfer_file_to_library
+        from shelfmark.download.postprocess.pipeline import transfer_file_to_library
 
         library = tmp_path / "library"
         library.mkdir()
@@ -317,7 +404,7 @@ class TestHardlinkWithLibraryMode:
 
         status_cb = MagicMock()
 
-        result = _transfer_file_to_library(
+        result = transfer_file_to_library(
             source_path=source,
             library_base=str(library),
             template="{Author}/{Title}",
@@ -337,7 +424,7 @@ class TestHardlinkWithLibraryMode:
 
     def test_transfer_directory_hardlink_multifile(self, tmp_path, sample_task):
         """Directory with multiple files transferred via hardlinks."""
-        from shelfmark.download.orchestrator import _transfer_directory_to_library
+        from shelfmark.download.postprocess.pipeline import transfer_directory_to_library
 
         library = tmp_path / "library"
         library.mkdir()
@@ -359,8 +446,9 @@ class TestHardlinkWithLibraryMode:
         sample_task.content_type = "audiobook"
         status_cb = MagicMock()
 
-        with patch('shelfmark.download.orchestrator._get_supported_formats', return_value=["mp3"]):
-            result = _transfer_directory_to_library(
+        with patch('shelfmark.download.postprocess.scan.get_supported_formats', return_value=["mp3"]), \
+             patch('shelfmark.config.env.TMP_DIR', temp_dir.parent):
+            result = transfer_directory_to_library(
                 source_dir=source_dir,
                 library_base=str(library),
                 template="{Author}/{Title}{ - PartNumber}",  # Correct token format
@@ -393,7 +481,7 @@ class TestHardlinkWithLibraryMode:
 
     def test_transfer_directory_move(self, tmp_path, sample_task):
         """Directory transferred via move (non-torrent)."""
-        from shelfmark.download.orchestrator import _transfer_directory_to_library
+        from shelfmark.download.postprocess.pipeline import transfer_directory_to_library
 
         library = tmp_path / "library"
         library.mkdir()
@@ -406,8 +494,9 @@ class TestHardlinkWithLibraryMode:
         sample_task.content_type = "audiobook"
         status_cb = MagicMock()
 
-        with patch('shelfmark.download.orchestrator._get_supported_formats', return_value=["mp3"]):
-            result = _transfer_directory_to_library(
+        with patch('shelfmark.download.postprocess.scan.get_supported_formats', return_value=["mp3"]), \
+             patch('shelfmark.config.env.TMP_DIR', source_dir.parent):
+            result = transfer_directory_to_library(
                 source_dir=source_dir,
                 library_base=str(library),
                 template="{Author}/{Title}{ - Part PartNumber}",
@@ -428,7 +517,7 @@ class TestHardlinkWithLibraryMode:
 
     def test_single_file_in_directory_no_part_number(self, tmp_path, sample_task):
         """Single file in directory doesn't get part number."""
-        from shelfmark.download.orchestrator import _transfer_directory_to_library
+        from shelfmark.download.postprocess.pipeline import transfer_directory_to_library
 
         library = tmp_path / "library"
         library.mkdir()
@@ -442,8 +531,8 @@ class TestHardlinkWithLibraryMode:
 
         status_cb = MagicMock()
 
-        with patch('shelfmark.download.orchestrator._get_supported_formats', return_value=["epub"]):
-            result = _transfer_directory_to_library(
+        with patch('shelfmark.download.postprocess.scan.get_supported_formats', return_value=["epub"]):
+            result = transfer_directory_to_library(
                 source_dir=source_dir,
                 library_base=str(library),
                 template="{Author}/{Title}{ - PartNumber}",  # Correct token format
@@ -477,8 +566,6 @@ class TestHardlinkDecisionLogic:
 
     def test_hardlink_enabled_same_filesystem(self, tmp_path, sample_task):
         """Hardlink used when enabled and same filesystem."""
-        from shelfmark.download.orchestrator import _process_organize_mode
-
         library = tmp_path / "library"
         library.mkdir()
         staging = tmp_path / "staging"
@@ -494,15 +581,13 @@ class TestHardlinkDecisionLogic:
 
         status_cb = MagicMock()
 
-        with patch('shelfmark.download.orchestrator.config') as mock_config:
-            mock_config.get = MagicMock(side_effect=lambda key, default=None: {
-                "LIBRARY_PATH": str(library),
-                "LIBRARY_TEMPLATE": "{Author}/{Title}",
-                "TORRENT_HARDLINK": True,
-                "PROCESSING_MODE": "library",
-            }.get(key, default))
-
-            result = _process_organize_mode(staged, sample_task, status_cb)
+        result, _ = _run_organize_post_process(
+            temp_file=staged,
+            task=sample_task,
+            library=library,
+            hardlink_enabled=True,
+            same_fs=True,
+        )
 
         assert result is not None
         # Source should still exist (hardlinked)
@@ -510,8 +595,6 @@ class TestHardlinkDecisionLogic:
 
     def test_hardlink_disabled_falls_back_to_move(self, tmp_path, sample_task):
         """Move used when hardlink disabled in config."""
-        from shelfmark.download.orchestrator import _process_organize_mode
-
         library = tmp_path / "library"
         library.mkdir()
         source = tmp_path / "downloads" / "book.epub"
@@ -525,47 +608,38 @@ class TestHardlinkDecisionLogic:
 
         status_cb = MagicMock()
 
-        with patch('shelfmark.download.orchestrator.config') as mock_config:
-            mock_config.get = MagicMock(side_effect=lambda key, default=None: {
-                "LIBRARY_PATH": str(library),
-                "LIBRARY_TEMPLATE": "{Author}/{Title}",
-                "TORRENT_HARDLINK": False,  # Disabled
-                "PROCESSING_MODE": "library",
-            }.get(key, default))
-
-            result = _process_organize_mode(staged, sample_task, status_cb)
+        result, _ = _run_organize_post_process(
+            temp_file=staged,
+            task=sample_task,
+            library=library,
+            hardlink_enabled=False,
+        )
 
         assert result is not None
         # Staged file should be moved (not exist)
         assert not staged.exists()
 
     def test_no_original_path_uses_staging(self, tmp_path, sample_task):
-        """Without original_download_path, moves from staging."""
-        from shelfmark.download.orchestrator import _process_organize_mode
-
+        """Non-prowlarr downloads move staged files into destination."""
         library = tmp_path / "library"
         library.mkdir()
         staged = tmp_path / "staging" / "book.epub"
         staged.parent.mkdir()
         staged.write_bytes(b"content")
 
-        # No original_download_path (direct download scenario)
+        # Simulate a non-external download (e.g. direct download) where Shelfmark owns the
+        # temp file in TMP_DIR and can safely move it.
+        sample_task.source = "direct_download"
         sample_task.original_download_path = None
 
-        status_cb = MagicMock()
-
-        with patch('shelfmark.download.orchestrator.config') as mock_config:
-            mock_config.get = MagicMock(side_effect=lambda key, default=None: {
-                "LIBRARY_PATH": str(library),
-                "LIBRARY_TEMPLATE": "{Author}/{Title}",
-                "TORRENT_HARDLINK": True,
-                "PROCESSING_MODE": "library",
-            }.get(key, default))
-
-            result = _process_organize_mode(staged, sample_task, status_cb)
+        result, _ = _run_organize_post_process(
+            temp_file=staged,
+            task=sample_task,
+            library=library,
+            hardlink_enabled=True,
+        )
 
         assert result is not None
-        # Staged file should be moved
         assert not staged.exists()
 
 
@@ -574,7 +648,7 @@ class TestHardlinkInodeVerification:
 
     def test_hardlink_shares_inode(self, tmp_path):
         """Hardlinked files share same inode."""
-        from shelfmark.download.orchestrator import _atomic_hardlink
+        from shelfmark.download.fs import atomic_hardlink as _atomic_hardlink
 
         source = tmp_path / "source.txt"
         source.write_text("shared content")
@@ -588,7 +662,7 @@ class TestHardlinkInodeVerification:
 
     def test_hardlink_reflects_changes(self, tmp_path):
         """Changes to source reflect in hardlink."""
-        from shelfmark.download.orchestrator import _atomic_hardlink
+        from shelfmark.download.fs import atomic_hardlink as _atomic_hardlink
 
         source = tmp_path / "source.txt"
         source.write_text("original")
@@ -604,7 +678,7 @@ class TestHardlinkInodeVerification:
 
     def test_hardlink_count_increases(self, tmp_path):
         """Link count increases with each hardlink."""
-        from shelfmark.download.orchestrator import _atomic_hardlink
+        from shelfmark.download.fs import atomic_hardlink as _atomic_hardlink
 
         source = tmp_path / "source.txt"
         source.write_text("content")
@@ -635,39 +709,39 @@ class TestTorrentOptimization:
             search_mode=SearchMode.UNIVERSAL,
         )
 
-    def test_is_torrent_source_true(self, tmp_path, sample_task):
+    def testis_torrent_source_true(self, tmp_path, sample_task):
         """Detects when source is the torrent client path."""
-        from shelfmark.download.orchestrator import _is_torrent_source
+        from shelfmark.download.postprocess.pipeline import is_torrent_source
 
         torrent_path = tmp_path / "downloads" / "book.epub"
         torrent_path.parent.mkdir()
         torrent_path.touch()
         sample_task.original_download_path = str(torrent_path)
 
-        assert _is_torrent_source(torrent_path, sample_task) is True
+        assert is_torrent_source(torrent_path, sample_task) is True
 
-    def test_is_torrent_source_false_no_original(self, tmp_path, sample_task):
+    def testis_torrent_source_false_no_original(self, tmp_path, sample_task):
         """Returns False when no original_download_path set."""
-        from shelfmark.download.orchestrator import _is_torrent_source
+        from shelfmark.download.postprocess.pipeline import is_torrent_source
 
         some_path = tmp_path / "staging" / "book.epub"
         sample_task.original_download_path = None
 
-        assert _is_torrent_source(some_path, sample_task) is False
+        assert is_torrent_source(some_path, sample_task) is False
 
-    def test_is_torrent_source_false_different_path(self, tmp_path, sample_task):
+    def testis_torrent_source_false_different_path(self, tmp_path, sample_task):
         """Returns False when paths don't match."""
-        from shelfmark.download.orchestrator import _is_torrent_source
+        from shelfmark.download.postprocess.pipeline import is_torrent_source
 
         torrent_path = tmp_path / "downloads" / "book.epub"
         staging_path = tmp_path / "staging" / "book.epub"
         sample_task.original_download_path = str(torrent_path)
 
-        assert _is_torrent_source(staging_path, sample_task) is False
+        assert is_torrent_source(staging_path, sample_task) is False
 
     def test_library_mode_torrent_no_hardlink_copies(self, tmp_path, sample_task):
         """Library mode copies (not moves) torrent files when hardlink unavailable."""
-        from shelfmark.download.orchestrator import _transfer_file_to_library
+        from shelfmark.download.postprocess.pipeline import transfer_file_to_library
 
         library = tmp_path / "library"
         library.mkdir()
@@ -680,7 +754,7 @@ class TestTorrentOptimization:
 
         status_cb = MagicMock()
 
-        result = _transfer_file_to_library(
+        result = transfer_file_to_library(
             source_path=torrent_path,
             library_base=str(library),
             template="{Author}/{Title}",
@@ -698,7 +772,7 @@ class TestTorrentOptimization:
 
     def test_library_mode_non_torrent_moves(self, tmp_path, sample_task):
         """Library mode moves (not copies) non-torrent files."""
-        from shelfmark.download.orchestrator import _transfer_file_to_library
+        from shelfmark.download.postprocess.pipeline import transfer_file_to_library
 
         library = tmp_path / "library"
         library.mkdir()
@@ -711,7 +785,7 @@ class TestTorrentOptimization:
 
         status_cb = MagicMock()
 
-        result = _transfer_file_to_library(
+        result = transfer_file_to_library(
             source_path=staging_path,
             library_base=str(library),
             template="{Author}/{Title}",
@@ -729,7 +803,7 @@ class TestTorrentOptimization:
 
     def test_directory_torrent_copies_all_files(self, tmp_path, sample_task):
         """Multi-file torrent directory copies all files to library."""
-        from shelfmark.download.orchestrator import _transfer_directory_to_library
+        from shelfmark.download.postprocess.pipeline import transfer_directory_to_library
 
         library = tmp_path / "library"
         library.mkdir()
@@ -742,8 +816,8 @@ class TestTorrentOptimization:
         sample_task.content_type = "audiobook"
         status_cb = MagicMock()
 
-        with patch('shelfmark.download.orchestrator._get_supported_formats', return_value=["mp3"]):
-            result = _transfer_directory_to_library(
+        with patch('shelfmark.download.postprocess.scan.get_supported_formats', return_value=["mp3"]):
+            result = transfer_directory_to_library(
                 source_dir=torrent_dir,
                 library_base=str(library),
                 template="{Author}/{Title}{ - PartNumber}",
@@ -763,12 +837,439 @@ class TestTorrentOptimization:
         assert len(list(author_dir.glob("*.mp3"))) == 2
 
 
+class TestTorrentSourceCleanupProtection:
+    """Integration tests simulating real torrent download flows.
+
+    These tests simulate actual production scenarios where:
+    - Torrent client (qBittorrent/Transmission) downloads to /downloads/complete/
+    - Prowlarr handler returns that path directly (no staging for torrents)
+    - Orchestrator processes via _post_process_download()
+    - Source files must remain intact for seeding
+
+    Each test simulates a specific real-world content type and file structure.
+    """
+
+    def _make_config_mock(self, library_path: str, hardlink: bool = True):
+        """Create config mock for library/organize mode with hardlinking."""
+        return MagicMock(side_effect=lambda key, default=None: {
+            # Destination paths (what _get_final_destination uses)
+            "DESTINATION": library_path,
+            "DESTINATION_AUDIOBOOK": library_path,
+            # Templates (what _get_template uses)
+            "TEMPLATE_ORGANIZE": "{Author}/{Title}",
+            "TEMPLATE_AUDIOBOOK_ORGANIZE": "{Author}/{Title}{ - PartNumber}",
+            # File organization mode
+            "FILE_ORGANIZATION": "organize",
+            "FILE_ORGANIZATION_AUDIOBOOK": "organize",
+            # Hardlink toggle
+            "HARDLINK_TORRENTS": hardlink,
+            "HARDLINK_TORRENTS_AUDIOBOOK": hardlink,
+            # Supported formats
+            "SUPPORTED_FORMATS": ["epub", "mobi"],
+            "SUPPORTED_AUDIOBOOK_FORMATS": ["mp3"],
+        }.get(key, default))
+
+    # ==================== EPUB EBOOK TESTS ====================
+
+    def test_torrent_epub_single_file_hardlink(self, tmp_path):
+        """Torrent: Single .epub ebook - hardlink preserves source for seeding.
+
+        Simulates: User downloads "The Way of Kings.epub" via qBittorrent.
+        qBittorrent saves to /downloads/complete/The Way of Kings.epub
+        Prowlarr handler returns this path directly.
+        Library mode hardlinks to /library/Brandon Sanderson/The Way of Kings.epub
+        Original MUST remain for seeding.
+        """
+        from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+        from shelfmark.core.models import DownloadTask, SearchMode
+
+        # Simulate qBittorrent's download location
+        downloads = tmp_path / "downloads" / "complete"
+        downloads.mkdir(parents=True)
+        torrent_file = downloads / "The Way of Kings.epub"
+        torrent_file.write_bytes(b"PK\x03\x04" + b"epub content" * 1000)  # Fake epub
+
+        library = tmp_path / "library"
+        library.mkdir()
+
+        # Task as returned by Prowlarr handler (original_download_path = torrent location)
+        task = DownloadTask(
+            task_id="prowlarr_12345",
+            source="prowlarr",
+            title="The Way of Kings",
+            author="Brandon Sanderson",
+            format="epub",
+            search_mode=SearchMode.UNIVERSAL,
+            original_download_path=str(torrent_file),  # Handler sets this for torrents
+        )
+
+        status_cb = MagicMock()
+
+        # Patch config used by postprocess pipeline
+        with patch('shelfmark.core.config.config') as mock_orch:
+            mock_orch.get = self._make_config_mock(str(library), hardlink=True)
+            mock_orch.CUSTOM_SCRIPT = None
+            result = _post_process_download(torrent_file, task, Event(), status_cb)
+
+        assert result is not None
+        result_path = Path(result)
+        assert result_path.exists()
+        assert result_path.suffix == ".epub"
+        assert "Brandon Sanderson" in str(result_path)
+
+        # CRITICAL: Torrent source must exist for seeding
+        assert torrent_file.exists(), "Torrent epub was deleted! qBittorrent seeding will fail."
+
+        # Verify hardlink (same inode = no extra disk space)
+        assert os.stat(torrent_file).st_ino == os.stat(result_path).st_ino
+
+    def test_torrent_mobi_single_file_hardlink(self, tmp_path):
+        """Torrent: Single .mobi ebook - hardlink preserves source.
+
+        Same flow as epub but with .mobi format.
+        """
+        from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+        from shelfmark.core.models import DownloadTask, SearchMode
+
+        downloads = tmp_path / "downloads" / "complete"
+        downloads.mkdir(parents=True)
+        torrent_file = downloads / "Dune.mobi"
+        torrent_file.write_bytes(b"BOOKMOBI" + b"mobi content" * 1000)
+
+        library = tmp_path / "library"
+        library.mkdir()
+
+        task = DownloadTask(
+            task_id="prowlarr_67890",
+            source="prowlarr",
+            title="Dune",
+            author="Frank Herbert",
+            format="mobi",
+            search_mode=SearchMode.UNIVERSAL,
+            original_download_path=str(torrent_file),
+        )
+
+        status_cb = MagicMock()
+
+        with patch('shelfmark.core.config.config') as mock_orch:
+            mock_orch.get = self._make_config_mock(str(library), hardlink=True)
+            mock_orch.CUSTOM_SCRIPT = None
+            result = _post_process_download(torrent_file, task, Event(), status_cb)
+
+        assert result is not None
+        assert torrent_file.exists(), "Torrent mobi was deleted!"
+        assert os.stat(torrent_file).st_ino == os.stat(result).st_ino
+
+    # ==================== AUDIOBOOK TESTS ====================
+
+    def test_torrent_audiobook_multifile_hardlink(self, tmp_path):
+        """Torrent: Multi-file audiobook - all source files preserved for seeding.
+
+        Simulates: User downloads "Project Hail Mary Audiobook" torrent.
+        qBittorrent saves to /downloads/complete/Project Hail Mary/
+        Contains: Part 01.mp3, Part 02.mp3, ... Part 12.mp3
+        Handler returns directory path.
+        Library mode hardlinks all mp3s to /library/Andy Weir/Project Hail Mary - 01.mp3, etc.
+        ALL original files must remain for seeding.
+        """
+        from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+        from shelfmark.core.models import DownloadTask, SearchMode
+
+        # Simulate torrent audiobook structure
+        downloads = tmp_path / "downloads" / "complete"
+        torrent_dir = downloads / "Project Hail Mary Audiobook"
+        torrent_dir.mkdir(parents=True)
+
+        # Create realistic audiobook files
+        audio_files = []
+        for i in range(1, 13):
+            audio_file = torrent_dir / f"Part {i:02d}.mp3"
+            audio_file.write_bytes(b"ID3" + f"audio content part {i}".encode() * 500)
+            audio_files.append(audio_file)
+
+        # Also include cover art and nfo (should be ignored)
+        (torrent_dir / "cover.jpg").write_bytes(b"fake jpg")
+        (torrent_dir / "info.nfo").write_text("release info")
+
+        library = tmp_path / "library"
+        library.mkdir()
+
+        task = DownloadTask(
+            task_id="prowlarr_audiobook_001",
+            source="prowlarr",
+            title="Project Hail Mary",
+            author="Andy Weir",
+            format="mp3",
+            content_type="audiobook",
+            search_mode=SearchMode.UNIVERSAL,
+            original_download_path=str(torrent_dir),
+        )
+
+        status_cb = MagicMock()
+
+        with patch('shelfmark.core.config.config') as mock_orch:
+            mock_orch.get = self._make_config_mock(str(library), hardlink=True)
+            mock_orch.CUSTOM_SCRIPT = None
+            result = _post_process_download(torrent_dir, task, Event(), status_cb)
+
+        assert result is not None
+
+        # CRITICAL: All torrent source files must exist for seeding
+        assert torrent_dir.exists(), "Torrent audiobook directory was deleted!"
+        for audio_file in audio_files:
+            assert audio_file.exists(), f"Torrent file {audio_file.name} was deleted!"
+
+        # Verify library has all 12 files
+        library_files = list((library / "Andy Weir").glob("*.mp3"))
+        assert len(library_files) == 12
+
+    # ==================== COMIC/CBZ TESTS ====================
+
+    def test_torrent_cbz_comic_hardlink(self, tmp_path):
+        """Torrent: Single .cbz comic - hardlink preserves source.
+
+        Simulates: User downloads comic via torrent.
+        """
+        from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+        from shelfmark.core.models import DownloadTask, SearchMode
+
+        downloads = tmp_path / "downloads" / "complete"
+        downloads.mkdir(parents=True)
+        torrent_file = downloads / "Batman 001.cbz"
+        torrent_file.write_bytes(b"PK\x03\x04" + b"cbz content" * 500)
+
+        library = tmp_path / "library"
+        library.mkdir()
+
+        task = DownloadTask(
+            task_id="prowlarr_comic_001",
+            source="prowlarr",
+            title="Batman 001",
+            author="DC Comics",
+            format="cbz",
+            content_type="comic_book",
+            search_mode=SearchMode.UNIVERSAL,
+            original_download_path=str(torrent_file),
+        )
+
+        status_cb = MagicMock()
+
+        with patch('shelfmark.core.config.config') as mock_orch:
+            mock_orch.get = self._make_config_mock(str(library), hardlink=True)
+            mock_orch.CUSTOM_SCRIPT = None
+            result = _post_process_download(torrent_file, task, Event(), status_cb)
+
+        assert result is not None
+        assert torrent_file.exists(), "Torrent cbz was deleted!"
+
+    # ==================== NON-TORRENT TESTS (USENET/DIRECT) ====================
+
+    def test_usenet_epub_no_original_path_copies_file(self, tmp_path):
+        """Usenet: files are copied into destination and source is preserved.
+
+        For external usenet downloads, Shelfmark treats the client path as read-only and
+        avoids deleting anything itself. Client-side cleanup is handled separately.
+        """
+        from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+        from shelfmark.core.models import DownloadTask, SearchMode
+
+        downloads = tmp_path / "downloads" / "complete"
+        downloads.mkdir(parents=True)
+        usenet_file = downloads / "book.epub"
+        usenet_file.write_bytes(b"usenet epub content")
+
+        library = tmp_path / "library"
+        library.mkdir()
+
+        task = DownloadTask(
+            task_id="nzbget_12345",
+            source="prowlarr",
+            title="Test Book",
+            author="Test Author",
+            format="epub",
+            search_mode=SearchMode.UNIVERSAL,
+            original_download_path=None,
+        )
+
+        status_cb = MagicMock()
+
+        with patch('shelfmark.core.config.config') as mock_orch:
+            mock_orch.get = self._make_config_mock(str(library), hardlink=True)
+            mock_orch.CUSTOM_SCRIPT = None
+            result = _post_process_download(usenet_file, task, Event(), status_cb)
+
+        assert result is not None
+        assert usenet_file.exists(), "Usenet source file should be preserved"
+        assert Path(result).exists()
+
+    def test_direct_download_moves_file(self, tmp_path):
+        """Direct download (Anna's Archive): File should be MOVED.
+
+        Simulates: User downloads directly from Anna's Archive.
+        No torrent client involved, no seeding needed.
+        """
+        from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+        from shelfmark.core.models import DownloadTask, SearchMode
+
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        staged_file = staging / "direct_download.epub"
+        staged_file.write_bytes(b"direct download content")
+
+        library = tmp_path / "library"
+        library.mkdir()
+
+        task = DownloadTask(
+            task_id="direct_12345",
+            source="annas_archive",
+            title="Direct Book",
+            author="Direct Author",
+            format="epub",
+            search_mode=SearchMode.DIRECT,
+            original_download_path=None,
+        )
+
+        status_cb = MagicMock()
+
+        with patch('shelfmark.core.config.config') as mock_orch:
+            mock_orch.get = self._make_config_mock(str(library), hardlink=True)
+            mock_orch.CUSTOM_SCRIPT = None
+            result = _post_process_download(staged_file, task, Event(), status_cb)
+
+        assert result is not None
+        assert not staged_file.exists(), "Direct download should be moved"
+
+    # ==================== HARDLINK DISABLED TESTS ====================
+
+    def test_torrent_with_hardlink_disabled_copies_file(self, tmp_path):
+        """Torrent with hardlink disabled: Should COPY (not move) to preserve seeding.
+
+        When user disables hardlinking but downloads via torrent,
+        the file must still be preserved for seeding (via copy).
+        """
+        from shelfmark.download.postprocess.router import post_process_download as _post_process_download
+        from shelfmark.core.models import DownloadTask, SearchMode
+
+        downloads = tmp_path / "downloads" / "complete"
+        downloads.mkdir(parents=True)
+        torrent_file = downloads / "book.epub"
+        torrent_file.write_bytes(b"torrent content")
+
+        library = tmp_path / "library"
+        library.mkdir()
+
+        task = DownloadTask(
+            task_id="prowlarr_no_hardlink",
+            source="prowlarr",
+            title="Test Book",
+            author="Test Author",
+            format="epub",
+            search_mode=SearchMode.UNIVERSAL,
+            original_download_path=str(torrent_file),
+        )
+
+        status_cb = MagicMock()
+
+        with patch('shelfmark.core.config.config') as mock_orch:
+            # Hardlink DISABLED
+            mock_orch.get = self._make_config_mock(str(library), hardlink=False)
+            mock_orch.CUSTOM_SCRIPT = None
+            result = _post_process_download(torrent_file, task, Event(), status_cb)
+
+        assert result is not None
+        # Even without hardlink, torrent source must be preserved (copied)
+        assert torrent_file.exists(), "Torrent source deleted even with hardlink disabled!"
+
+        # Verify NOT a hardlink (different inodes = separate copy)
+        assert os.stat(torrent_file).st_ino != os.stat(result).st_ino
+
+    # ==================== EDGE CASE TESTS ====================
+
+    def test_torrent_cross_filesystem_falls_back_to_copy(self, tmp_path):
+        """Torrent on different filesystem: Falls back to copy, preserves source.
+
+        When torrent is on different filesystem than library,
+        hardlink fails and should fall back to copy (not move).
+        """
+        from shelfmark.download.postprocess.pipeline import transfer_file_to_library
+        from shelfmark.core.models import DownloadTask, SearchMode
+
+        # Simulate by directly calling transfer_file_to_library with use_hardlink=False
+        # (this is what happens after same_filesystem check fails)
+        downloads = tmp_path / "downloads"
+        downloads.mkdir()
+        torrent_file = downloads / "book.epub"
+        torrent_file.write_bytes(b"content")
+
+        library = tmp_path / "library"
+        library.mkdir()
+
+        task = DownloadTask(
+            task_id="test",
+            source="prowlarr",
+            title="Test",
+            author="Author",
+            format="epub",
+            search_mode=SearchMode.UNIVERSAL,
+            original_download_path=str(torrent_file),
+        )
+
+        status_cb = MagicMock()
+
+        result = transfer_file_to_library(
+            source_path=torrent_file,
+            library_base=str(library),
+            template="{Author}/{Title}",
+            metadata={"Author": "Author", "Title": "Test"},
+            task=task,
+            temp_file=torrent_file,
+            status_callback=status_cb,
+            use_hardlink=False,  # Simulating cross-filesystem fallback
+        )
+
+        assert result is not None
+        # Torrent source preserved (copied, not moved)
+        assert torrent_file.exists()
+
+    def testis_torrent_source_detection(self, tmp_path):
+        """Unit test: is_torrent_source correctly identifies torrent paths."""
+        from shelfmark.download.postprocess.pipeline import is_torrent_source
+        from shelfmark.core.models import DownloadTask, SearchMode
+
+        torrent_path = tmp_path / "downloads" / "book.epub"
+        torrent_path.parent.mkdir()
+        torrent_path.touch()
+
+        staging_path = tmp_path / "staging" / "book.epub"
+        staging_path.parent.mkdir()
+        staging_path.touch()
+
+        task = DownloadTask(
+            task_id="test",
+            source="prowlarr",
+            title="Test",
+            author="Author",
+            format="epub",
+            search_mode=SearchMode.UNIVERSAL,
+        )
+
+        # No original path = not a torrent source
+        task.original_download_path = None
+        assert is_torrent_source(torrent_path, task) is False
+        assert is_torrent_source(staging_path, task) is False
+
+        # With original path set
+        task.original_download_path = str(torrent_path)
+        assert is_torrent_source(torrent_path, task) is True
+        assert is_torrent_source(staging_path, task) is False
+
+
 class TestEdgeCases:
     """Edge cases and error handling."""
 
     def test_empty_directory_returns_none(self, tmp_path):
         """Empty source directory returns None."""
-        from shelfmark.download.orchestrator import _transfer_directory_to_library
+        from shelfmark.download.postprocess.pipeline import transfer_directory_to_library
         from shelfmark.core.models import DownloadTask, SearchMode
 
         task = DownloadTask(
@@ -787,8 +1288,8 @@ class TestEdgeCases:
 
         status_cb = MagicMock()
 
-        with patch('shelfmark.download.orchestrator._get_supported_formats', return_value=["epub"]):
-            result = _transfer_directory_to_library(
+        with patch('shelfmark.download.postprocess.scan.get_supported_formats', return_value=["epub"]):
+            result = transfer_directory_to_library(
                 source_dir=source_dir,
                 library_base=str(library),
                 template="{Title}",
@@ -803,7 +1304,7 @@ class TestEdgeCases:
 
     def test_nonexistent_source_for_hardlink(self, tmp_path):
         """Missing source file prevents hardlink creation."""
-        from shelfmark.download.orchestrator import _process_organize_mode
+        from shelfmark.download.postprocess.router import post_process_download as _post_process_download
         from shelfmark.core.models import DownloadTask, SearchMode
 
         task = DownloadTask(
@@ -824,15 +1325,16 @@ class TestEdgeCases:
 
         status_cb = MagicMock()
 
-        with patch('shelfmark.download.orchestrator.config') as mock_config:
+        with patch('shelfmark.core.config.config') as mock_config:
             mock_config.get = MagicMock(side_effect=lambda key, default=None: {
-                "LIBRARY_PATH": str(library),
-                "LIBRARY_TEMPLATE": "{Title}",
-                "TORRENT_HARDLINK": True,
-                "PROCESSING_MODE": "library",
+                "DESTINATION": str(library),
+                "TEMPLATE_ORGANIZE": "{Title}",
+                "FILE_ORGANIZATION": "organize",
+                "HARDLINK_TORRENTS": True,
             }.get(key, default))
+            mock_config.CUSTOM_SCRIPT = None
 
-            result = _process_organize_mode(staged, task, status_cb)
+            result = _post_process_download(staged, task, Event(), status_cb)
 
         # Should fall back to move since original doesn't exist
         assert result is not None
@@ -840,7 +1342,7 @@ class TestEdgeCases:
 
     def test_permission_denied_library_path(self, tmp_path):
         """Handles permission denied on library path."""
-        from shelfmark.download.orchestrator import _process_organize_mode
+        from shelfmark.download.postprocess.router import post_process_download as _post_process_download
         from shelfmark.core.models import DownloadTask, SearchMode
 
         task = DownloadTask(
@@ -858,14 +1360,14 @@ class TestEdgeCases:
 
         status_cb = MagicMock()
 
-        with patch('shelfmark.download.orchestrator.config') as mock_config:
+        with patch('shelfmark.core.config.config') as mock_config:
             mock_config.get = MagicMock(side_effect=lambda key, default=None: {
-                "LIBRARY_PATH": "/nonexistent/protected/path",
-                "LIBRARY_TEMPLATE": "{Title}",
-                "PROCESSING_MODE": "library",
+                "DESTINATION": "/nonexistent/protected/path",
+                "TEMPLATE_ORGANIZE": "{Title}",
+                "FILE_ORGANIZATION": "organize",
             }.get(key, default))
 
-            result = _process_organize_mode(staged, task, status_cb)
+            result = _post_process_download(staged, task, Event(), status_cb)
 
         # Should return None (fall back to ingest)
         assert result is None

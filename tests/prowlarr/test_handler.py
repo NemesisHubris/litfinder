@@ -242,7 +242,7 @@ class TestProwlarrHandlerExistingDownload:
             ), patch(
                 "shelfmark.release_sources.prowlarr.handler.remove_release",
             ), patch(
-                "shelfmark.download.orchestrator.get_staging_dir",
+                "shelfmark.download.staging.get_staging_dir",
                 return_value=staging_dir,
             ):
                 handler = ProwlarrHandler()
@@ -321,7 +321,7 @@ class TestProwlarrHandlerPolling:
             ), patch(
                 "shelfmark.release_sources.prowlarr.handler.remove_release",
             ), patch(
-                "shelfmark.download.orchestrator.get_staging_dir",
+                "shelfmark.download.staging.get_staging_dir",
                 return_value=staging_dir,
             ), patch(
                 "shelfmark.release_sources.prowlarr.handler.POLL_INTERVAL",
@@ -392,14 +392,14 @@ class TestProwlarrHandlerPolling:
 
             assert result is None
             assert recorder.last_status == "error"
-            mock_client.remove.assert_called_once()
+            mock_client.remove.assert_not_called()
 
 
 class TestProwlarrHandlerCancellation:
     """Tests for download cancellation."""
 
-    def test_cancellation_removes_download(self):
-        """Test that cancellation removes the download from client."""
+    def test_cancellation_does_not_remove_torrent(self):
+        """Test that torrent cancellation does not remove from client."""
         mock_client = MagicMock()
         mock_client.name = "test_client"
         mock_client.find_existing.return_value = None
@@ -446,7 +446,7 @@ class TestProwlarrHandlerCancellation:
 
             assert result is None
             assert "cancelled" in recorder.statuses
-            mock_client.remove.assert_called_with("download_id", delete_files=True)
+            mock_client.remove.assert_not_called()
 
 
 class TestProwlarrHandlerCancel:
@@ -512,7 +512,7 @@ class TestProwlarrHandlerFileStaging:
             ), patch(
                 "shelfmark.release_sources.prowlarr.handler.remove_release",
             ), patch(
-                "shelfmark.download.orchestrator.get_staging_dir",
+                "shelfmark.download.staging.get_staging_dir",
                 return_value=staging_dir,
             ), patch(
                 "shelfmark.release_sources.prowlarr.handler.POLL_INTERVAL",
@@ -575,7 +575,7 @@ class TestProwlarrHandlerFileStaging:
             ), patch(
                 "shelfmark.release_sources.prowlarr.handler.remove_release",
             ), patch(
-                "shelfmark.download.orchestrator.get_staging_dir",
+                "shelfmark.download.staging.get_staging_dir",
                 return_value=staging_dir,
             ), patch(
                 "shelfmark.release_sources.prowlarr.handler.POLL_INTERVAL",
@@ -604,7 +604,7 @@ class TestProwlarrHandlerFileStaging:
                 assert (staged_dir / "cover.jpg").exists()
 
     def test_handles_duplicate_filename(self):
-        """Test handling of duplicate filename during staging (usenet only - torrents skip staging)."""
+        """Usenet downloads return the original file path (no staging)."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             source_file = Path(tmp_dir) / "source" / "book.epub"
             source_file.parent.mkdir(parents=True)
@@ -641,7 +641,7 @@ class TestProwlarrHandlerFileStaging:
             ), patch(
                 "shelfmark.release_sources.prowlarr.handler.remove_release",
             ), patch(
-                "shelfmark.download.orchestrator.get_staging_dir",
+                "shelfmark.download.staging.get_staging_dir",
                 return_value=staging_dir,
             ), patch(
                 "shelfmark.release_sources.prowlarr.handler.POLL_INTERVAL",
@@ -664,8 +664,35 @@ class TestProwlarrHandlerFileStaging:
                 )
 
                 assert result is not None
-                # Should have a different name (with counter)
-                staged_file = Path(result)
-                assert staged_file.exists()
-                assert staged_file.name != "book.epub"
-                assert staged_file.read_text() == "new content"
+                returned_file = Path(result)
+                assert returned_file == source_file
+                assert returned_file.exists()
+                assert returned_file.read_text() == "new content"
+
+
+class TestProwlarrHandlerPostProcessCleanup:
+    def test_usenet_move_triggers_client_cleanup(self):
+        handler = ProwlarrHandler()
+        task = DownloadTask(task_id="cleanup-test", source="prowlarr", title="Test")
+
+        mock_client = MagicMock()
+        mock_client.name = "nzbget"
+        handler._cleanup_refs[task.task_id] = (mock_client, "123", "usenet")
+
+        with patch("shelfmark.release_sources.prowlarr.handler.config.get", return_value="move"):
+            handler.post_process_cleanup(task, success=True)
+
+        mock_client.remove.assert_called_once_with("123", delete_files=True)
+
+    def test_usenet_copy_does_not_cleanup(self):
+        handler = ProwlarrHandler()
+        task = DownloadTask(task_id="cleanup-test", source="prowlarr", title="Test")
+
+        mock_client = MagicMock()
+        mock_client.name = "nzbget"
+        handler._cleanup_refs[task.task_id] = (mock_client, "123", "usenet")
+
+        with patch("shelfmark.release_sources.prowlarr.handler.config.get", return_value="copy"):
+            handler.post_process_cleanup(task, success=True)
+
+        mock_client.remove.assert_not_called()

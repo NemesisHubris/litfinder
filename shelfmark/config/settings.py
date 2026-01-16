@@ -3,8 +3,14 @@
 import os
 from pathlib import Path
 import json
+from typing import Any
 
 from shelfmark.config import env
+from shelfmark.config.booklore_settings import (
+    get_booklore_library_options,
+    get_booklore_path_options,
+    test_booklore_connection,
+)
 from shelfmark.core.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -53,6 +59,8 @@ def _log_external_bypasser_warning() -> None:
 from shelfmark.core.settings_registry import (
     register_settings,
     register_group,
+    register_on_save,
+    load_config_file,
     TextField,
     PasswordField,
     NumberField,
@@ -149,6 +157,8 @@ def _get_release_source_options():
         for source in list_available_sources()
         if source.get("can_be_default", True)
     ]
+
+
 
 _LANGUAGE_OPTIONS = [{"value": lang["code"], "label": lang["language"]} for lang in _SUPPORTED_BOOK_LANGUAGE]
 
@@ -277,7 +287,6 @@ def general_settings():
             label="Audiobook Library URL",
             description="Adds a separate navigation button for your audiobook library (Audiobookshelf, Plex, etc). When both URLs are set, icons are shown instead of text.",
             placeholder="http://audiobookshelf:8080",
-            env_supported=False,
         ),
         HeadingField(
             key="search_defaults_heading",
@@ -341,7 +350,6 @@ def search_mode_settings():
             description="Default sort order for search results.",
             options=_AA_SORT_OPTIONS,
             default="relevance",
-            env_supported=False,  # UI-only setting
             show_when={"field": "SEARCH_MODE", "value": "direct"},
         ),
         HeadingField(
@@ -372,7 +380,6 @@ def search_mode_settings():
             description="The release source tab to open by default in the release modal.",
             options=_get_release_source_options,  # Callable - evaluated lazily to avoid circular imports
             default="direct_download",
-            env_supported=False,  # UI-only setting, not configurable via ENV
             show_when={"field": "SEARCH_MODE", "value": "universal"},
         ),
     ]
@@ -511,6 +518,40 @@ def network_settings():
     ]
 
 
+def _contains_path_separators(value: Any) -> bool:
+    return isinstance(value, str) and ("/" in value or "\\" in value)
+
+
+def _on_save_downloads(values: dict[str, Any]) -> dict[str, Any]:
+    """Validate download settings before persisting."""
+    existing = load_config_file("downloads")
+    effective: dict[str, Any] = dict(existing)
+    effective.update(values)
+
+    # Books: only validate templates when saving to a folder.
+    books_output_mode = effective.get("BOOKS_OUTPUT_MODE", "folder")
+    if books_output_mode == "folder" and effective.get("FILE_ORGANIZATION", "rename") == "rename":
+        template = effective.get("TEMPLATE_RENAME", "")
+        if _contains_path_separators(template):
+            return {
+                "error": True,
+                "message": "Books Naming Template cannot contain '/' or '\\' in Rename mode. Use Organize mode to create folders.",
+                "values": values,
+            }
+
+    # Audiobooks are always folder output.
+    if effective.get("FILE_ORGANIZATION_AUDIOBOOK", "rename") == "rename":
+        template = effective.get("TEMPLATE_AUDIOBOOK_RENAME", "")
+        if _contains_path_separators(template):
+            return {
+                "error": True,
+                "message": "Audiobooks Naming Template cannot contain '/' or '\\' in Rename mode. Use Organize mode to create folders.",
+                "values": values,
+            }
+
+    return {"error": False, "values": values}
+
+
 @register_settings("downloads", "Downloads", icon="folder", order=5)
 def download_settings():
     """Configure download behavior and file locations."""
@@ -522,6 +563,24 @@ def download_settings():
             title="Books",
             description="Configure where ebooks, comics, and magazines are saved.",
         ),
+        SelectField(
+            key="BOOKS_OUTPUT_MODE",
+            label="Output Mode",
+            description="Choose where completed book files are sent.",
+            options=[
+                {
+                    "value": "folder",
+                    "label": "Folder",
+                    "description": "Save files to the destination folder",
+                },
+                {
+                    "value": "booklore",
+                    "label": "Booklore (API)",
+                    "description": "Upload files directly to Booklore",
+                },
+            ],
+            default="folder",
+        ),
         TextField(
             key="DESTINATION",
             label="Destination",
@@ -529,6 +588,10 @@ def download_settings():
             default="/books",
             required=True,
             env_var="INGEST_DIR",  # Legacy env var name for backwards compatibility
+            show_when={
+                "field": "BOOKS_OUTPUT_MODE",
+                "value": "folder",
+            },
         ),
         SelectField(
             key="FILE_ORGANIZATION",
@@ -552,15 +615,22 @@ def download_settings():
                 },
             ],
             default="rename",
+            show_when={
+                "field": "BOOKS_OUTPUT_MODE",
+                "value": "folder",
+            },
         ),
         # Rename mode template - filename only
         TextField(
             key="TEMPLATE_RENAME",
             label="Naming Template",
-            description="Variables: {Author}, {Title}, {Year}. Universal adds: {Series}, {SeriesPosition}, {Subtitle}",
+            description="Variables: {Author}, {Title}, {Year}. Universal adds: {Series}, {SeriesPosition}, {Subtitle}. Rename templates are filename-only (no '/' or '\\'); use Organize for folders.",
             default="{Author} - {Title} ({Year})",
             placeholder="{Author} - {Title} ({Year})",
-            show_when={"field": "FILE_ORGANIZATION", "value": "rename"},
+            show_when=[
+                {"field": "BOOKS_OUTPUT_MODE", "value": "folder"},
+                {"field": "FILE_ORGANIZATION", "value": "rename"},
+            ],
         ),
         # Organize mode template - folders allowed
         TextField(
@@ -569,7 +639,10 @@ def download_settings():
             description="Use / to create folders. Variables: {Author}, {Title}, {Year}. Universal adds: {Series}, {SeriesPosition}, {Subtitle}",
             default="{Author}/{Title} ({Year})",
             placeholder="{Author}/{Series/}{Title} ({Year})",
-            show_when={"field": "FILE_ORGANIZATION", "value": "organize"},
+            show_when=[
+                {"field": "BOOKS_OUTPUT_MODE", "value": "folder"},
+                {"field": "FILE_ORGANIZATION", "value": "organize"},
+            ],
         ),
         CheckboxField(
             key="HARDLINK_TORRENTS",
@@ -577,6 +650,63 @@ def download_settings():
             description="Create hardlinks instead of copying. Preserves seeding but archives won't be extracted. Don't use if destination is a library ingest folder.",
             default=False,
             universal_only=True,
+            show_when={
+                "field": "BOOKS_OUTPUT_MODE",
+                "value": "folder",
+            },
+        ),
+        HeadingField(
+            key="booklore_heading",
+            title="Booklore",
+            description="Upload books directly to Booklore via API. Audiobooks always use folder mode.",
+            show_when={"field": "BOOKS_OUTPUT_MODE", "value": "booklore"},
+        ),
+        TextField(
+            key="BOOKLORE_HOST",
+            label="Booklore URL",
+            description="Base URL of your Booklore instance",
+            placeholder="http://booklore:6060",
+            required=True,
+            show_when={"field": "BOOKS_OUTPUT_MODE", "value": "booklore"},
+        ),
+        TextField(
+            key="BOOKLORE_USERNAME",
+            label="Username",
+            description="Booklore account username",
+            required=True,
+            show_when={"field": "BOOKS_OUTPUT_MODE", "value": "booklore"},
+        ),
+        PasswordField(
+            key="BOOKLORE_PASSWORD",
+            label="Password",
+            description="Booklore account password",
+            required=True,
+            show_when={"field": "BOOKS_OUTPUT_MODE", "value": "booklore"},
+        ),
+        SelectField(
+            key="BOOKLORE_LIBRARY_ID",
+            label="Library",
+            description="Booklore library to upload into.",
+            options=get_booklore_library_options,
+            required=True,
+            show_when={"field": "BOOKS_OUTPUT_MODE", "value": "booklore"},
+        ),
+        SelectField(
+            key="BOOKLORE_PATH_ID",
+            label="Path",
+            description="Booklore library path for uploads.",
+            options=get_booklore_path_options,
+            required=True,
+            filter_by_field="BOOKLORE_LIBRARY_ID",
+            show_when={"field": "BOOKS_OUTPUT_MODE", "value": "booklore"},
+        ),
+        ActionButton(
+            key="test_booklore",
+            label="Test Connection",
+            description="Verify your Booklore configuration",
+            style="primary",
+            callback=test_booklore_connection,
+            show_when={"field": "BOOKS_OUTPUT_MODE", "value": "booklore"},
         ),
 
         # === AUDIOBOOKS SECTION ===
@@ -610,7 +740,7 @@ def download_settings():
         TextField(
             key="TEMPLATE_AUDIOBOOK_RENAME",
             label="Naming Template",
-            description="Variables: {Author}, {Title}, {Year}, {Series}, {SeriesPosition}, {Subtitle}, {PartNumber}",
+            description="Variables: {Author}, {Title}, {Year}, {Series}, {SeriesPosition}, {Subtitle}, {PartNumber}. Rename templates are filename-only (no '/' or '\\'); use Organize for folders.",
             default="{Author} - {Title}",
             placeholder="{Author} - {Title}{ - Part }{PartNumber}",
             show_when={"field": "FILE_ORGANIZATION_AUDIOBOOK", "value": "rename"},
@@ -644,14 +774,12 @@ def download_settings():
             label="Auto-Open Downloads Sidebar",
             description="Automatically open the downloads sidebar when a new download is queued.",
             default=False,
-            env_supported=False,  # UI-only setting
         ),
         CheckboxField(
             key="DOWNLOAD_TO_BROWSER",
             label="Download to Browser",
             description="Automatically download completed files to your browser.",
             default=False,
-            env_supported=False,  # UI-only setting
         ),
         NumberField(
             key="MAX_CONCURRENT_DOWNLOADS",
@@ -671,6 +799,10 @@ def download_settings():
             max_value=86400,
         ),
     ]
+
+
+# Register the on_save handler for this tab
+register_on_save("downloads", _on_save_downloads)
 
 
 def _get_fast_source_options():
@@ -777,7 +909,6 @@ def download_source_settings():
             description="Always tried first, no waiting or bypass required.",
             options=_get_fast_source_options,
             default=_get_fast_source_defaults(),
-            env_supported=False,
         ),
         OrderableListField(
             key="SOURCE_PRIORITY",
