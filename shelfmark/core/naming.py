@@ -10,11 +10,12 @@ from shelfmark.core.logger import setup_logger
 logger = setup_logger(__name__)
 
 
-TOKEN_PATTERN = re.compile(
-    r'\{([- ._/\[(]*)'   # prefix: space, dash, dot, underscore, slash, brackets
-    r'([A-Za-z]+)'        # token name
-    r'([- ._/\])]*)\}'    # suffix: space, dash, dot, underscore, slash, brackets
-)
+# Known variable tokens, sorted longest-first to avoid partial matches
+# e.g., "SeriesPosition" must match before "Series"
+KNOWN_TOKENS = ['seriesposition', 'partnumber', 'subtitle', 'author', 'series', 'title', 'year']
+
+# Match any {...} block for template parsing
+BRACE_PATTERN = re.compile(r'\{([^}]+)\}')
 
 # Characters that are invalid in filenames on various filesystems
 INVALID_CHARS = re.compile(r'[\\/:*?"<>|]')
@@ -88,37 +89,46 @@ def parse_naming_template(
     # Normalize metadata keys to lowercase for case-insensitive matching
     normalized = {k.lower(): v for k, v in metadata.items()}
 
-    def replace_token(match: re.Match) -> str:
-        prefix = match.group(1)
-        token_name = match.group(2).lower()
-        suffix = match.group(3)
+    def replace_block(match: re.Match) -> str:
+        content = match.group(1)
+        content_lower = content.lower()
 
-        # Get the value for this token
-        value = normalized.get(token_name)
+        # Find which known token appears in this block (longest first)
+        for token in KNOWN_TOKENS:
+            idx = content_lower.find(token)
+            if idx != -1:
+                prefix = content[:idx]
+                suffix = content[idx + len(token):]
 
-        # Special handling for series position
-        if token_name == 'seriesposition':
-            value = format_series_position(value)
+                # Get the value for this token
+                value = normalized.get(token)
 
-        # Convert to string
-        if value is None:
-            value = ""
-        else:
-            value = str(value).strip()
+                # Special handling for series position
+                if token == 'seriesposition':
+                    value = format_series_position(value)
 
-        # If value is empty, return empty string (no prefix/suffix)
-        if not value:
-            return ""
+                # Convert to string
+                if value is None:
+                    value = ""
+                else:
+                    value = str(value).strip()
 
-        if not allow_path_separators:
-            value = value.replace("/", "_")
-        # Sanitize the value
-        value = sanitize_filename(value)
+                # If value is empty, return empty string (no prefix/suffix)
+                if not value:
+                    return ""
 
-        return f"{prefix}{value}{suffix}"
+                if not allow_path_separators:
+                    value = value.replace("/", "_")
+                # Sanitize the value
+                value = sanitize_filename(value)
+
+                return f"{prefix}{value}{suffix}"
+
+        # No known token found → return original block unchanged
+        return match.group(0)
 
     # Replace all tokens
-    result = TOKEN_PATTERN.sub(replace_token, template)
+    result = BRACE_PATTERN.sub(replace_block, template)
 
     # Clean up any double slashes that might result from empty tokens
     result = re.sub(r'/+', '/', result)

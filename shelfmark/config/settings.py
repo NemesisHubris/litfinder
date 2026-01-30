@@ -683,7 +683,7 @@ def download_settings():
         TextField(
             key="TEMPLATE_RENAME",
             label="Naming Template",
-            description="Variables: {Author}, {Title}, {Year}. Universal adds: {Series}, {SeriesPosition}, {Subtitle}. Rename templates are filename-only (no '/' or '\\'); use Organize for folders.",
+            description="Variables: {Author}, {Title}, {Year}. Universal adds: {Series}, {SeriesPosition}, {Subtitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\\'); use Organize for folders.",
             default="{Author} - {Title} ({Year})",
             placeholder="{Author} - {Title} ({Year})",
             show_when=[
@@ -695,7 +695,7 @@ def download_settings():
         TextField(
             key="TEMPLATE_ORGANIZE",
             label="Path Template",
-            description="Use / to create folders. Variables: {Author}, {Title}, {Year}. Universal adds: {Series}, {SeriesPosition}, {Subtitle}",
+            description="Use / to create folders. Variables: {Author}, {Title}, {Year}. Universal adds: {Series}, {SeriesPosition}, {Subtitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty.",
             default="{Author}/{Title} ({Year})",
             placeholder="{Author}/{Series/}{Title} ({Year})",
             show_when=[
@@ -799,7 +799,7 @@ def download_settings():
         TextField(
             key="TEMPLATE_AUDIOBOOK_RENAME",
             label="Naming Template",
-            description="Variables: {Author}, {Title}, {Year}, {Series}, {SeriesPosition}, {Subtitle}, {PartNumber}. Rename templates are filename-only (no '/' or '\\'); use Organize for folders.",
+            description="Variables: {Author}, {Title}, {Year}, {Series}, {SeriesPosition}, {Subtitle}, {PartNumber}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\\'); use Organize for folders.",
             default="{Author} - {Title}",
             placeholder="{Author} - {Title}{ - Part }{PartNumber}",
             show_when={"field": "FILE_ORGANIZATION_AUDIOBOOK", "value": "rename"},
@@ -809,7 +809,7 @@ def download_settings():
         TextField(
             key="TEMPLATE_AUDIOBOOK_ORGANIZE",
             label="Path Template",
-            description="Use / to create folders. Variables: {Author}, {Title}, {Year}, {Series}, {SeriesPosition}, {Subtitle}, {PartNumber}",
+            description="Use / to create folders. Variables: {Author}, {Title}, {Year}, {Series}, {SeriesPosition}, {Subtitle}, {PartNumber}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty.",
             default="{Author}/{Title}",
             placeholder="{Author}/{Series/}{Title}{ - Part }{PartNumber}",
             show_when={"field": "FILE_ORGANIZATION_AUDIOBOOK", "value": "organize"},

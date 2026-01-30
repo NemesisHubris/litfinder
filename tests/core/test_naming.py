@@ -216,6 +216,153 @@ class TestParseNamingTemplate:
         assert result == "Brandon Sanderson/The Way of Kings"
 
 
+class TestArbitraryPrefixSuffix:
+    """Tests for enhanced template syntax with arbitrary prefix/suffix text."""
+
+    def test_vol_prefix_with_value(self):
+        """Test {Vol. SeriesPosition - } with a value."""
+        result = parse_naming_template(
+            "{Vol. SeriesPosition - }{Title}",
+            {"SeriesPosition": 2, "Title": "Book Title"}
+        )
+        assert result == "Vol. 2 - Book Title"
+
+    def test_vol_prefix_without_value(self):
+        """Test {Vol. SeriesPosition - } without a value produces nothing."""
+        result = parse_naming_template(
+            "{Vol. SeriesPosition - }{Title}",
+            {"SeriesPosition": None, "Title": "Book Title"}
+        )
+        assert result == "Book Title"
+
+    def test_vol_prefix_empty_string(self):
+        """Test {Vol. SeriesPosition - } with empty string produces nothing."""
+        result = parse_naming_template(
+            "{Vol. SeriesPosition - }{Title}",
+            {"SeriesPosition": "", "Title": "Book Title"}
+        )
+        assert result == "Book Title"
+
+    def test_book_x_of_series_pattern(self):
+        """Test {Book SeriesPosition of the Series} pattern."""
+        result = parse_naming_template(
+            "{Book SeriesPosition of the Series}",
+            {"SeriesPosition": 2, "Series": "Stormlight"}
+        )
+        assert result == "Book 2 of the Series"
+
+    def test_case_insensitive_arbitrary_prefix(self):
+        """Test case-insensitive token matching with arbitrary prefix."""
+        result = parse_naming_template(
+            "{vol. seriesposition - }{Title}",
+            {"SeriesPosition": 3, "Title": "Book"}
+        )
+        assert result == "vol. 3 - Book"
+
+    def test_arbitrary_prefix_with_part_number(self):
+        """Test arbitrary prefix with PartNumber token."""
+        result = parse_naming_template(
+            "{Part PartNumber}",
+            {"PartNumber": "05"}
+        )
+        assert result == "Part 05"
+
+    def test_arbitrary_prefix_part_number_empty(self):
+        """Test arbitrary prefix with empty PartNumber."""
+        result = parse_naming_template(
+            "{Title}{Part PartNumber}",
+            {"Title": "Book", "PartNumber": None}
+        )
+        assert result == "Book"
+
+    def test_no_variable_in_block_unchanged(self):
+        """Test that blocks without known variables are left unchanged."""
+        result = parse_naming_template(
+            "{literal text}",
+            {"Title": "Book"}
+        )
+        assert result == "{literal text}"
+
+    def test_mixed_legacy_and_new_syntax(self):
+        """Test mixed template with both legacy and new syntax."""
+        result = parse_naming_template(
+            "{Author}/{Vol. SeriesPosition - }{Title}",
+            {"Author": "Sanderson", "SeriesPosition": 1, "Title": "Mistborn"}
+        )
+        assert result == "Sanderson/Vol. 1 - Mistborn"
+
+    def test_mixed_with_empty_series_position(self):
+        """Test mixed template when series position is empty."""
+        result = parse_naming_template(
+            "{Author}/{Vol. SeriesPosition - }{Title}",
+            {"Author": "Sanderson", "SeriesPosition": None, "Title": "Elantris"}
+        )
+        assert result == "Sanderson/Elantris"
+
+    def test_subtitle_with_arbitrary_prefix(self):
+        """Test Subtitle token with arbitrary prefix text."""
+        result = parse_naming_template(
+            "{Title}{: Subtitle}",
+            {"Title": "Main", "Subtitle": "Secondary"}
+        )
+        assert result == "Main: Secondary"
+
+    def test_year_with_arbitrary_prefix_suffix(self):
+        """Test Year with arbitrary text around it."""
+        result = parse_naming_template(
+            "{Title} {(Year)}",
+            {"Title": "Book", "Year": 2020}
+        )
+        assert result == "Book (2020)"
+
+    def test_year_empty_with_arbitrary_prefix_suffix(self):
+        """Test Year with arbitrary text when Year is empty."""
+        result = parse_naming_template(
+            "{Title} {(Year)}",
+            {"Title": "Book", "Year": None}
+        )
+        # Note: trailing space gets cleaned up
+        assert result == "Book"
+
+    def test_series_position_longest_match(self):
+        """Test that SeriesPosition matches before Series."""
+        result = parse_naming_template(
+            "{SeriesPosition - }{Series}",
+            {"SeriesPosition": 1, "Series": "Stormlight"}
+        )
+        assert result == "1 - Stormlight"
+
+    def test_arbitrary_prefix_float_position(self):
+        """Test arbitrary prefix with float series position."""
+        result = parse_naming_template(
+            "{Vol. SeriesPosition - }{Title}",
+            {"SeriesPosition": 1.5, "Title": "Novella"}
+        )
+        assert result == "Vol. 1.5 - Novella"
+
+    def test_complex_template_with_arbitrary_prefixes(self):
+        """Test complex template combining multiple arbitrary prefix patterns."""
+        template = "{Author}/{Series/}{Vol. SeriesPosition - }{Title}{: Subtitle} {(Year)}"
+
+        # All fields present
+        result = parse_naming_template(template, {
+            "Author": "Brandon Sanderson",
+            "Series": "Stormlight Archive",
+            "SeriesPosition": 1,
+            "Title": "The Way of Kings",
+            "Subtitle": "Epic Fantasy",
+            "Year": 2010
+        })
+        assert result == "Brandon Sanderson/Stormlight Archive/Vol. 1 - The Way of Kings: Epic Fantasy (2010)"
+
+        # Minimal fields
+        result = parse_naming_template(template, {
+            "Author": "Brandon Sanderson",
+            "Title": "Standalone Novel"
+        })
+        assert result == "Brandon Sanderson/Standalone Novel"
+
+
 class TestBuildLibraryPath:
     """Tests for complete library path building."""
 
