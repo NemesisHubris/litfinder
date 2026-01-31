@@ -51,6 +51,7 @@ if BASE_PATH:
 async_mode = 'gevent'
 
 # Initialize Flask-SocketIO with reverse proxy support
+socketio_path = f"{BASE_PATH}/socket.io" if BASE_PATH else "/socket.io"
 socketio = SocketIO(
     app,
     cors_allowed_origins="*",
@@ -58,7 +59,7 @@ socketio = SocketIO(
     logger=False,
     engineio_logger=False,
     # Reverse proxy / Traefik compatibility settings
-    path='/socket.io',
+    path=socketio_path,
     ping_timeout=60,  # Time to wait for pong response
     ping_interval=25,  # Send ping every 25 seconds
     # Allow both websocket and polling for better compatibility
@@ -268,12 +269,29 @@ def proxy_auth_middleware():
 
     from shelfmark.core.settings_registry import load_config_file
 
+    def get_proxy_header(header_name: str) -> str | None:
+        """Resolve proxy auth values from headers with WSGI env fallbacks."""
+        value = request.headers.get(header_name)
+        if value:
+            return value
+
+        env_key = f"HTTP_{header_name.upper().replace('-', '_')}"
+        value = request.environ.get(env_key)
+        if value:
+            return value
+
+        # Some proxies set authenticated username in REMOTE_USER (not as a header).
+        if header_name.lower().replace("_", "-") == "remote-user":
+            return request.environ.get("REMOTE_USER")
+
+        return None
+
     try:
         security_config = load_config_file("security")
         user_header = security_config.get("PROXY_AUTH_USER_HEADER", "X-Auth-User")
 
         # Extract username from proxy header
-        username = request.headers.get(user_header)
+        username = get_proxy_header(user_header)
 
         if not username:
             if request.path.startswith('/api/auth/'):
@@ -291,7 +309,7 @@ def proxy_auth_middleware():
             admin_group_name = security_config.get("PROXY_AUTH_ADMIN_GROUP_NAME", "admins")
             
             # Extract groups from proxy header (can be comma or pipe separated)
-            groups_header = request.headers.get(admin_group_header, "")
+            groups_header = get_proxy_header(admin_group_header) or ""
             user_groups_delimiter = "," if "," in groups_header else "|"
             user_groups = [g.strip() for g in groups_header.split(user_groups_delimiter) if g.strip()]
             
@@ -1423,6 +1441,10 @@ def api_releases() -> Union[Response, Tuple[Response, int]]:
 
         manual_query = request.args.get('manual_query', '').strip()
 
+        # Accept indexer names for Prowlarr filtering (comma-separated)
+        indexers_param = request.args.get('indexers', '').strip()
+        indexers = [idx.strip() for idx in indexers_param.split(',') if idx.strip()] if indexers_param else None
+
         if not provider or not book_id:
             return jsonify({"error": "Parameters 'provider' and 'book_id' are required"}), 400
 
@@ -1463,7 +1485,7 @@ def api_releases() -> Union[Response, Tuple[Response, int]]:
 
                 from shelfmark.core.search_plan import build_release_search_plan
 
-                plan = build_release_search_plan(book, languages=languages, manual_query=manual_query)
+                plan = build_release_search_plan(book, languages=languages, manual_query=manual_query, indexers=indexers)
 
                 if plan.manual_query:
                     planned_query = plan.manual_query
