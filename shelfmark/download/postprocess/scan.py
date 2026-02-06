@@ -8,6 +8,7 @@ from shelfmark.core.logger import setup_logger
 from shelfmark.core.models import DownloadTask
 from shelfmark.core.utils import is_audiobook as check_audiobook
 from shelfmark.download.archive import ArchiveExtractionError, extract_archive, is_archive
+from shelfmark.download.fs import run_blocking_io
 from shelfmark.download.permissions_debug import log_path_permission_context
 from shelfmark.download.postprocess.policy import (
     get_supported_audiobook_formats,
@@ -55,7 +56,12 @@ def extract_archive_files(
     content_type = task.content_type
 
     try:
-        extracted_files, warnings, rejected_files = extract_archive(archive_path, output_dir, content_type)
+        extracted_files, warnings, rejected_files = run_blocking_io(
+            extract_archive,
+            archive_path,
+            output_dir,
+            content_type,
+        )
     except ArchiveExtractionError as exc:
         logger.warning(
             "Task %s: archive extraction failed for %s: %s",
@@ -111,10 +117,6 @@ def scan_directory_tree(
         logger.warning(f"Cannot access download folder: {directory} ({exc})")
         return [], [], [], f"Cannot access download folder: {directory} ({exc})"
 
-    book_files: List[Path] = []
-    rejected_files: List[Path] = []
-    archive_files: List[Path] = []
-
     supported_formats = get_supported_formats(content_type)
     supported_exts = {f".{fmt}" for fmt in supported_formats}
 
@@ -146,18 +148,35 @@ def scan_directory_tree(
         else:
             logger.debug(f"Error scanning directory tree: {error}")
 
-    for root, _, files in os.walk(directory, onerror=onerror):
-        for filename in files:
-            file_path = Path(root) / filename
-            suffix = file_path.suffix.lower()
+    def _walk_tree() -> Tuple[List[Path], List[Path], List[Path]]:
+        book_files: List[Path] = []
+        rejected_files: List[Path] = []
+        archive_files: List[Path] = []
 
-            if suffix in supported_exts:
-                book_files.append(file_path)
-            elif suffix in trackable_exts:
-                rejected_files.append(file_path)
+        for root, _, files in os.walk(directory, onerror=onerror):
+            for filename in files:
+                file_path = Path(root) / filename
+                suffix = file_path.suffix.lower()
 
-            if is_archive(file_path):
-                archive_files.append(file_path)
+                if suffix in supported_exts:
+                    book_files.append(file_path)
+                elif suffix in trackable_exts:
+                    rejected_files.append(file_path)
+
+                if is_archive(file_path):
+                    archive_files.append(file_path)
+
+        return book_files, rejected_files, archive_files
+
+    try:
+        book_files, rejected_files, archive_files = run_blocking_io(_walk_tree)
+    except PermissionError as exc:
+        log_path_permission_context("scan_directory_walk", directory)
+        logger.warning(f"Permission denied scanning directory: {directory} ({exc})")
+        return [], [], [], f"Permission denied accessing download folder: {directory}"
+    except (FileNotFoundError, NotADirectoryError, OSError) as exc:
+        logger.warning(f"Cannot access download folder: {directory} ({exc})")
+        return [], [], [], f"Cannot access download folder: {directory} ({exc})"
 
     return book_files, rejected_files, archive_files, None
 
@@ -194,12 +213,15 @@ def collect_directory_files(
 
     if archive_files:
         if not allow_archive_extraction:
-            logger.warning(
-                "Task %s: archive extraction disabled (torrent hardlinking enabled) for %s",
+            # When extraction is disabled (typically due to torrent hardlinking),
+            # treat archives as the final importable "files" rather than failing.
+            logger.info(
+                "Task %s: archive extraction disabled; importing %d archive(s) as-is from %s",
                 task.task_id,
+                len(archive_files),
                 directory,
             )
-            return [], rejected_files, [], "Archive extraction is disabled when torrent hardlinking is enabled"
+            return archive_files, rejected_files, [], None
 
         if status_callback:
             status_callback("resolving", "Extracting archives")
@@ -292,6 +314,11 @@ def collect_staged_files(
             )
 
         return extracted_files, rejected_files, cleanup_paths, error
+
+    if is_archive(working_path) and not allow_archive_extraction:
+        # When extraction is disabled (typically due to torrent hardlinking),
+        # import the archive as-is rather than treating it as an unsupported file.
+        return [working_path], [], [], None
 
     # Single-file download result (non-archive).
     # Ensure we respect the user's supported format settings.

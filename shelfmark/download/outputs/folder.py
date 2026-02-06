@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
@@ -11,26 +10,12 @@ import shelfmark.core.config as core_config
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.models import DownloadTask
 from shelfmark.core.utils import is_audiobook as check_audiobook
-from shelfmark.download.archive import is_archive
 from shelfmark.download.outputs import register_output
 from shelfmark.download.staging import StageAction, STAGE_NONE
 
 logger = setup_logger(__name__)
 
 FOLDER_OUTPUT_MODE = "folder"
-
-
-def _resolve_custom_script_target(target_path: Path, destination: Path, path_mode: str) -> Path:
-    mode = (path_mode or "absolute").strip().lower()
-    if mode != "relative":
-        return target_path
-
-    try:
-        return target_path.relative_to(destination)
-    except ValueError:
-        if target_path.is_absolute():
-            return Path(target_path.name)
-    return target_path
 
 
 def _format_op_counts(op_counts: dict[str, int]) -> str:
@@ -108,12 +93,14 @@ def process_folder_output(
 ) -> Optional[str]:
     """Post-process download to the configured folder destination."""
     from shelfmark.download.postprocess.pipeline import (
+        CustomScriptContext,
+        CustomScriptTransferSummary,
         cleanup_output_staging,
         is_torrent_source,
         log_plan_steps,
         prepare_output_files,
+        maybe_run_custom_script,
         record_step,
-        safe_cleanup_path,
         transfer_book_files,
     )
 
@@ -146,73 +133,9 @@ def process_folder_output(
         step_name = f"stage_{prepared.output_plan.stage_action}"
         record_step(steps, step_name, source=str(temp_file), dest=str(prepared.output_plan.staging_dir))
 
-    def run_custom_script(script_path: str, target_path: Path, phase: str) -> bool:
-        path_mode = core_config.config.get("CUSTOM_SCRIPT_PATH_MODE", "absolute")
-        script_target = _resolve_custom_script_target(target_path, plan.destination, path_mode)
-        env = {
-            **os.environ,
-            "SHELFMARK_CUSTOM_SCRIPT_TARGET": str(target_path),
-            "SHELFMARK_CUSTOM_SCRIPT_RELATIVE": str(_resolve_custom_script_target(target_path, plan.destination, "relative")),
-            "SHELFMARK_CUSTOM_SCRIPT_DESTINATION": str(plan.destination),
-            "SHELFMARK_CUSTOM_SCRIPT_MODE": str(path_mode),
-            "SHELFMARK_CUSTOM_SCRIPT_PHASE": phase,
-        }
-        record_step(
-            steps,
-            "custom_script",
-            script=str(script_path),
-            target=str(script_target),
-            target_abs=str(target_path),
-            mode=str(path_mode),
-            phase=phase,
-        )
-        log_plan_steps(task.task_id, steps)
-        logger.info(
-            "Task %s: running custom script %s on %s (%s)",
-            task.task_id,
-            script_path,
-            script_target,
-            phase,
-        )
-        try:
-            result = subprocess.run(
-                [script_path, str(script_target)],
-                check=True,
-                timeout=300,  # 5 minute timeout
-                capture_output=True,
-                text=True,
-                env=env,
-            )
-            if result.stdout:
-                logger.debug("Task %s: custom script stdout: %s", task.task_id, result.stdout.strip())
-            return True
-        except FileNotFoundError:
-            logger.error("Task %s: custom script not found: %s", task.task_id, script_path)
-            status_callback("error", f"Custom script not found: {script_path}")
-            return False
-        except PermissionError:
-            logger.error("Task %s: custom script not executable: %s", task.task_id, script_path)
-            status_callback("error", f"Custom script not executable: {script_path}")
-            return False
-        except subprocess.TimeoutExpired:
-            logger.error("Task %s: custom script timed out after 300s: %s", task.task_id, script_path)
-            status_callback("error", "Custom script timed out")
-            return False
-        except subprocess.CalledProcessError as e:
-            stderr = e.stderr.strip() if e.stderr else "No error output"
-            logger.error(
-                "Task %s: custom script failed (exit code %s): %s",
-                task.task_id,
-                e.returncode,
-                stderr,
-            )
-            status_callback("error", f"Custom script failed: {stderr[:100]}")
-            return False
-
     # Custom script is run post-transfer (see below).
 
-    # If we staged a copy into TMP_DIR (e.g. for custom script), transfer from the staged
-    # path and disable hardlinking for this transfer.
+    # If we staged into TMP_DIR, transfer from the staged path and disable hardlinking.
     use_hardlink = plan.use_hardlink and prepared.output_plan.stage_action == STAGE_NONE
     source_path = plan.hardlink_source if use_hardlink and plan.hardlink_source else prepared.working_path
     is_torrent = is_torrent_source(source_path, task)
@@ -290,24 +213,29 @@ def process_folder_output(
             len(final_paths),
         )
 
-    # Run custom script once per successful task, after transfer.
-    if core_config.config.CUSTOM_SCRIPT:
-        if len(final_paths) == 1:
-            target_path = final_paths[0]
-        else:
-            try:
-                target_path = Path(os.path.commonpath([str(p.parent) for p in final_paths]))
-            except ValueError:
-                target_path = plan.destination
+    script_context = CustomScriptContext(
+        task=task,
+        phase="post_transfer",
+        output_mode=plan.output_mode,
+        organization_mode=plan.organization_mode,
+        destination=plan.destination,
+        final_paths=final_paths,
+        transfer=CustomScriptTransferSummary(
+            op_counts=op_counts,
+            use_hardlink=use_hardlink,
+            is_torrent=is_torrent,
+            preserve_source=preserve_source,
+        ),
+    )
 
-        if not run_custom_script(core_config.config.CUSTOM_SCRIPT, target_path, phase="post_transfer"):
-            cleanup_output_staging(
-                prepared.output_plan,
-                prepared.working_path,
-                task,
-                prepared.cleanup_paths,
-            )
-            return None
+    if not maybe_run_custom_script(script_context, status_callback=status_callback, steps=steps):
+        cleanup_output_staging(
+            prepared.output_plan,
+            prepared.working_path,
+            task,
+            prepared.cleanup_paths,
+        )
+        return None
 
     cleanup_output_staging(
         prepared.output_plan,

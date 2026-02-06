@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
@@ -17,7 +18,7 @@ from shelfmark.download.staging import STAGE_MOVE, STAGE_NONE, build_staging_dir
 logger = setup_logger(__name__)
 
 BOOKLORE_OUTPUT_MODE = "booklore"
-BOOKLORE_SUPPORTED_EXTENSIONS = {".cb7", ".cbr", ".cbz", ".epub", ".fb2", ".pdf"}
+BOOKLORE_SUPPORTED_EXTENSIONS = {".azw", ".azw3", ".cb7", ".cbr", ".cbz", ".epub", ".fb2", ".mobi", ".pdf"}
 BOOKLORE_SUPPORTED_FORMATS_LABEL = ", ".join(
     ext.lstrip(".").upper() for ext in sorted(BOOKLORE_SUPPORTED_EXTENSIONS)
 )
@@ -197,9 +198,11 @@ def _post_process_booklore(
     status_callback,
 ) -> Optional[str]:
     from shelfmark.download.postprocess.pipeline import (
+        CustomScriptContext,
         OutputPlan,
         cleanup_output_staging,
         is_managed_workspace_path,
+        maybe_run_custom_script,
         prepare_output_files,
     )
 
@@ -264,6 +267,33 @@ def _post_process_booklore(
                 logger.warning("Task %s: Booklore refresh failed: %s", task.task_id, e)
 
         logger.info("Task %s: uploaded %d file(s) to Booklore", task.task_id, len(prepared.files))
+
+        destination: Optional[Path]
+        if len(prepared.files) == 1:
+            destination = prepared.files[0].parent
+        else:
+            try:
+                destination = Path(os.path.commonpath([str(p.parent) for p in prepared.files]))
+            except ValueError:
+                destination = prepared.files[0].parent if prepared.files else None
+
+        script_context = CustomScriptContext(
+            task=task,
+            phase="post_upload",
+            output_mode=BOOKLORE_OUTPUT_MODE,
+            destination=destination,
+            final_paths=prepared.files,
+            output_details={
+                "booklore": {
+                    "base_url": booklore_config.base_url,
+                    "library_id": booklore_config.library_id,
+                    "path_id": booklore_config.path_id,
+                    "refresh_after_upload": bool(booklore_config.refresh_after_upload),
+                }
+            },
+        )
+        if not maybe_run_custom_script(script_context, status_callback=status_callback):
+            return None
 
         message = "Uploaded to Booklore"
         if len(prepared.files) > 1:
