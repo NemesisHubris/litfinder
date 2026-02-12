@@ -99,6 +99,7 @@ export interface TagListFieldConfig extends BaseField {
   type: 'TagListField';
   value: string[];
   placeholder?: string;
+  normalizeUrls?: boolean;
 }
 
 // OrderableListField types - generic drag-and-drop reorderable list

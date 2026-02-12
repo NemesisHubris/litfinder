@@ -9,7 +9,7 @@ interface TagListFieldProps {
   requiredTags?: string[];  // Tags that cannot be removed
 }
 
-function normalizeTag(raw: string): string {
+function normalizeTag(raw: string, normalizeUrls: boolean): string {
   let s = raw.trim();
   if (!s) return '';
 
@@ -21,16 +21,18 @@ function normalizeTag(raw: string): string {
     s = s.slice(1, -1).trim();
   }
 
-  // Avoid special sentinel values.
-  if (s.toLowerCase() === 'auto') return '';
+  if (normalizeUrls) {
+    // Avoid special sentinel values.
+    if (s.toLowerCase() === 'auto') return '';
 
-  // Basic URL normalization to keep UX friendly; backend also normalizes on save.
-  // Only add https:// if it looks like a domain (contains a dot) and has no protocol.
-  // This avoids adding prefixes to non-URL values like OIDC scopes (openid, email, etc.)
-  if (!s.includes('://') && !s.startsWith('/') && s.includes('.')) {
-    s = `https://${s}`;
+    // Basic URL normalization to keep UX friendly; backend also normalizes on save.
+    // Only add https:// if it looks like a domain (contains a dot) and has no protocol.
+    // This avoids adding prefixes to non-URL values like OIDC scopes (openid, email, etc.)
+    if (!s.includes('://') && !s.startsWith('/') && s.includes('.')) {
+      s = `https://${s}`;
+    }
+    s = s.replace(/\/+$/, '');
   }
-  s = s.replace(/\/+$/, '');
   return s.trim();
 }
 
@@ -39,6 +41,7 @@ export const TagListField = ({ field, value, onChange, disabled, requiredTags }:
   const required = requiredTags ?? [];
   const inputRef = useRef<HTMLInputElement>(null);
   const [draft, setDraft] = useState('');
+  const normalizeUrls = field.normalizeUrls ?? true;
 
   const tags = useMemo(() => (value ?? []).map(String).filter((t) => t.trim() !== ''), [value]);
 
@@ -52,7 +55,7 @@ export const TagListField = ({ field, value, onChange, disabled, requiredTags }:
 
     const next = [...tags];
     for (const part of parts) {
-      const normalized = normalizeTag(part);
+      const normalized = normalizeTag(part, normalizeUrls);
       if (!normalized) continue;
       if (next.includes(normalized)) continue;
       next.push(normalized);
@@ -152,4 +155,3 @@ export const TagListField = ({ field, value, onChange, disabled, requiredTags }:
     </div>
   );
 };
-
