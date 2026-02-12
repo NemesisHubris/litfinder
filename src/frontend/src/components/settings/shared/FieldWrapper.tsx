@@ -1,5 +1,6 @@
 import { ReactNode } from 'react';
 import { SettingsField } from '../../../types/settings';
+import { Tooltip } from '../../shared/Tooltip';
 import { EnvLockBadge } from './EnvLockBadge';
 
 interface FieldWrapperProps {
@@ -8,6 +9,13 @@ interface FieldWrapperProps {
   // Optional overrides for dynamic disabled state (from disabledWhen)
   disabledOverride?: boolean;
   disabledReasonOverride?: string;
+  headerRight?: ReactNode;
+  userOverrideCount?: number;
+  userOverrideDetails?: Array<{
+    userId: number;
+    username: string;
+    value: unknown;
+  }>;
 }
 
 // Badge shown when a field is disabled
@@ -60,11 +68,60 @@ const RestartRequiredBadge = () => (
   </span>
 );
 
+const UserOverriddenBadge = ({
+  count,
+  details = [],
+}: {
+  count: number;
+  details?: Array<{ userId: number; username: string; value: unknown }>;
+}) => {
+  const formatValue = (value: unknown): string => {
+    if (value === null || value === undefined) return '(empty)';
+    if (typeof value === 'string') return value || '(empty)';
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  };
+
+  const visibleDetails = details.slice(0, 10);
+  const extraCount = Math.max(details.length - visibleDetails.length, 0);
+
+  const content = (
+    <div className="space-y-1 max-w-xs">
+      {visibleDetails.map((entry) => (
+        <div key={entry.userId} className="text-[11px] leading-snug">
+          <span className="font-medium">{entry.username}</span>
+          <span className="opacity-70">: {formatValue(entry.value)}</span>
+        </div>
+      ))}
+      {extraCount > 0 && (
+        <div className="text-[11px] opacity-70">and {extraCount} more...</div>
+      )}
+    </div>
+  );
+
+  return (
+    <Tooltip content={content} position="top">
+      <span
+        className="inline-flex items-center gap-1 px-1.5 py-0.5 text-xs rounded
+                   bg-sky-500/15 text-sky-500 dark:text-sky-400 border border-sky-500/30"
+      >
+        User overridden{count > 1 ? ` (${count})` : ''}
+      </span>
+    </Tooltip>
+  );
+};
+
 export const FieldWrapper = ({
   field,
   children,
   disabledOverride,
   disabledReasonOverride,
+  headerRight,
+  userOverrideCount,
+  userOverrideDetails,
 }: FieldWrapperProps) => {
   // Action buttons, headings, and table fields handle their own layout
   // Table fields have column headers, so they don't need a separate label
@@ -82,25 +139,34 @@ export const FieldWrapper = ({
   const isFullyDimmed = isDisabled && !field.fromEnv;
 
   return (
-    <div className={`space-y-1.5 ${isFullyDimmed ? 'opacity-60' : ''}`}>
-      <div className="flex items-center gap-2">
-        <label className={`text-sm font-medium ${isFullyDimmed ? 'text-zinc-500' : ''}`}>
-          {field.label}
-          {field.required && !isDisabled && <span className="text-red-500 ml-0.5">*</span>}
-        </label>
-        {field.fromEnv && <EnvLockBadge />}
-        {requiresRestart && !isDisabled && !field.fromEnv && <RestartRequiredBadge />}
-        {isDisabled && !field.fromEnv && <DisabledBadge reason={disabledReason} />}
+    <div className="space-y-1.5">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2 flex-wrap min-w-0">
+          <label className={`text-sm font-medium ${isFullyDimmed ? 'text-zinc-500' : ''}`}>
+            {field.label}
+            {field.required && !isDisabled && <span className="text-red-500 ml-0.5">*</span>}
+          </label>
+          {field.fromEnv && <EnvLockBadge />}
+          {requiresRestart && !isDisabled && !field.fromEnv && <RestartRequiredBadge />}
+          {isDisabled && !field.fromEnv && <DisabledBadge reason={disabledReason} />}
+          {Boolean(userOverrideCount) && (userOverrideCount || 0) > 0 && (
+            <UserOverriddenBadge
+              count={userOverrideCount || 0}
+              details={userOverrideDetails}
+            />
+          )}
+        </div>
+        <div className="flex items-center gap-2 shrink-0">{headerRight}</div>
       </div>
 
-      {children}
+      <div className={isFullyDimmed ? 'opacity-50' : ''}>{children}</div>
 
       {field.description && (
         <p className="text-xs opacity-60">{field.description}</p>
       )}
 
       {isDisabled && disabledReason && (
-        <p className="text-xs text-zinc-500 italic">{disabledReason}</p>
+        <p className="text-xs text-zinc-400 italic">{disabledReason}</p>
       )}
     </div>
   );

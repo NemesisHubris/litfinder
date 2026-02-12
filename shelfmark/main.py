@@ -27,6 +27,15 @@ from shelfmark.core.config import config as app_config
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.models import SearchFilters
 from shelfmark.core.prefix_middleware import PrefixMiddleware
+from shelfmark.core.auth_modes import (
+    determine_auth_mode,
+    get_auth_check_admin_status,
+    has_local_password_admin,
+    is_settings_or_onboarding_path,
+    should_restrict_settings_to_admin,
+)
+from shelfmark.core.cwa_user_sync import upsert_cwa_user
+from shelfmark.core.external_user_linking import upsert_external_user
 from shelfmark.core.utils import normalize_base_path
 from shelfmark.api.websocket import ws_manager
 
@@ -181,28 +190,20 @@ def get_client_ip() -> str:
 def get_auth_mode() -> str:
     """Determine which authentication mode is active.
 
-    Priority: 
-    1. CWA (if enabled in settings and DB path exists)
-    2. Built-in credentials (if configured)
-    3. No auth required or error -> "none"
+    Uses configured AUTH_METHOD plus runtime prerequisites.
+    Returns "none" when config is invalid or unavailable.
     """
     from shelfmark.core.settings_registry import load_config_file
 
     try:
         security_config = load_config_file("security")
-        auth_mode = security_config.get("AUTH_METHOD", "none")
-        if auth_mode == "cwa" and CWA_DB_PATH:
-            return "cwa"
-        if auth_mode == "builtin" and security_config.get("BUILTIN_USERNAME") and security_config.get("BUILTIN_PASSWORD_HASH"):
-            return "builtin"
-        if auth_mode == "proxy" and security_config.get("PROXY_AUTH_USER_HEADER"):
-            return "proxy"
-        if auth_mode == "oidc" and security_config.get("OIDC_DISCOVERY_URL") and security_config.get("OIDC_CLIENT_ID"):
-            return "oidc"
+        return determine_auth_mode(
+            security_config,
+            CWA_DB_PATH,
+            has_local_admin=has_local_password_admin(user_db),
+        )
     except Exception:
-        pass
-
-    return "none"
+        return "none"
 
 
 # Enable CORS in development mode for local frontend development
@@ -327,26 +328,51 @@ def proxy_auth_middleware():
             logger.warning(f"Proxy auth enabled but no username found in header '{user_header}'")
             return jsonify({"error": "Authentication required. Proxy header not set."}), 401
         
-        # Check if settings access should be restricted to admins
-        restrict_to_admin = security_config.get("PROXY_AUTH_RESTRICT_SETTINGS_TO_ADMIN", False)
-        is_admin = True  # Default to admin if not restricting
-        
-        if restrict_to_admin:
-            admin_group_header = security_config.get("PROXY_AUTH_ADMIN_GROUP_HEADER", "X-Auth-Groups")
-            admin_group_name = security_config.get("PROXY_AUTH_ADMIN_GROUP_NAME", "admins")
-            
-            # Extract groups from proxy header (can be comma or pipe separated)
+        # Resolve admin role for proxy sessions.
+        # If an admin group is configured, derive from groups header.
+        # Otherwise preserve existing DB role for known users and default
+        # first-time users to admin (to avoid lockouts).
+        admin_group_header = security_config.get("PROXY_AUTH_ADMIN_GROUP_HEADER", "X-Auth-Groups")
+        admin_group_name = str(security_config.get("PROXY_AUTH_ADMIN_GROUP_NAME", "") or "").strip()
+        is_admin = True
+
+        if admin_group_name:
             groups_header = get_proxy_header(admin_group_header) or ""
             user_groups_delimiter = "," if "," in groups_header else "|"
             user_groups = [g.strip() for g in groups_header.split(user_groups_delimiter) if g.strip()]
-            
             is_admin = admin_group_name in user_groups
+        elif user_db is not None:
+            existing_db_user = user_db.get_user(username=username)
+            if existing_db_user:
+                is_admin = existing_db_user.get("role") == "admin"
         
         # Create or update session
+        previous_username = session.get('user_id')
+        if previous_username and previous_username != username:
+            # Header identity changed mid-session; force reprovision for the new user.
+            session.pop('db_user_id', None)
+
         session['user_id'] = username
         session['is_admin'] = is_admin
+
+        # Provision proxy-authenticated users into users.db for multi-user features.
+        if user_db is not None and 'db_user_id' not in session:
+            role = "admin" if is_admin else "user"
+            db_user, _ = upsert_external_user(
+                user_db,
+                auth_source="proxy",
+                username=username,
+                role=role,
+                collision_strategy="takeover",
+                context="proxy_request",
+            )
+            if db_user is None:
+                raise RuntimeError("Unexpected proxy user sync result: no user returned")
+
+            session['db_user_id'] = db_user["id"]
+
         session.permanent = False
-        
+
         return None
         
     except Exception as e:
@@ -371,22 +397,13 @@ def login_required(f):
         if 'user_id' not in session:
             return jsonify({"error": "Unauthorized"}), 401
 
-        # Check admin access for settings endpoints (proxy, CWA, OIDC, and builtin modes)
-        if auth_mode in ("proxy", "cwa", "oidc", "builtin") and (request.path.startswith('/api/settings') or request.path.startswith('/api/onboarding')):
+        # Check admin access for settings/onboarding endpoints.
+        if is_settings_or_onboarding_path(request.path):
             from shelfmark.core.settings_registry import load_config_file
 
             try:
-                security_config = load_config_file("security")
-
-                if auth_mode == "builtin":
-                    # Builtin multi-user: settings are always admin-only
-                    restrict_to_admin = 'db_user_id' in session
-                elif auth_mode == "proxy":
-                    restrict_to_admin = security_config.get("PROXY_AUTH_RESTRICT_SETTINGS_TO_ADMIN", False)
-                else:
-                    # For OIDC and CWA, settings are always admin-only
-                    # The user's admin status comes from their group or database role
-                    restrict_to_admin = True
+                users_config = load_config_file("users")
+                restrict_to_admin = should_restrict_settings_to_admin(users_config)
 
                 if restrict_to_admin and not session.get('is_admin', False):
                     return jsonify({"error": "Admin access required"}), 403
@@ -592,14 +609,12 @@ def api_download() -> Union[Response, Tuple[Response, int]]:
 
     try:
         priority = int(request.args.get('priority', 0))
-        email_recipient = request.args.get('email_recipient')
         # Per-user download overrides
         db_user_id = session.get('db_user_id')
         _username = session.get('user_id')
-        _user_overrides = user_db.get_user_settings(db_user_id) if (user_db and db_user_id) else {}
         success, error_msg = backend.queue_book(
-            book_id, priority, email_recipient=email_recipient,
-            user_id=db_user_id, username=_username, user_overrides=_user_overrides,
+            book_id, priority,
+            user_id=db_user_id, username=_username,
         )
         if success:
             return jsonify({"status": "queued", "priority": priority})
@@ -638,14 +653,12 @@ def api_download_release() -> Union[Response, Tuple[Response, int]]:
             return jsonify({"error": "source_id is required"}), 400
 
         priority = data.get('priority', 0)
-        email_recipient = data.get('email_recipient')
         # Per-user download overrides
         db_user_id = session.get('db_user_id')
         _username = session.get('user_id')
-        _user_overrides = user_db.get_user_settings(db_user_id) if (user_db and db_user_id) else {}
         success, error_msg = backend.queue_release(
-            data, priority, email_recipient=email_recipient,
-            user_id=db_user_id, username=_username, user_overrides=_user_overrides,
+            data, priority,
+            user_id=db_user_id, username=_username,
         )
 
         if success:
@@ -674,22 +687,6 @@ def api_config() -> Union[Response, Tuple[Response, int]]:
         from shelfmark.config.env import _is_config_dir_writable
         from shelfmark.core.onboarding import is_onboarding_complete as _get_onboarding_complete
 
-        def _normalize_email_recipients(value: Any) -> list[dict[str, str]]:
-            if not isinstance(value, list):
-                return []
-
-            recipients: list[dict[str, str]] = []
-            for entry in value:
-                if not isinstance(entry, dict):
-                    continue
-                nickname = str(entry.get("nickname", "") or "").strip()
-                email = str(entry.get("email", "") or "").strip()
-                if not nickname or not email:
-                    continue
-                recipients.append({"nickname": nickname, "email": email})
-
-            return recipients
-
         config = {
             "calibre_web_url": app_config.get("CALIBRE_WEB_URL", ""),
             "audiobook_library_url": app_config.get("AUDIOBOOK_LIBRARY_URL", ""),
@@ -705,9 +702,6 @@ def api_config() -> Union[Response, Tuple[Response, int]]:
             "metadata_search_fields": get_provider_search_fields(),
             "default_release_source": app_config.get("DEFAULT_RELEASE_SOURCE", "direct_download"),
             "books_output_mode": app_config.get("BOOKS_OUTPUT_MODE", "folder"),
-            # Safe-to-expose subset of email output settings (recipients only).
-            # SMTP credentials are configured via the settings UI but are never returned to the frontend.
-            "email_recipients": _normalize_email_recipients(app_config.get("EMAIL_RECIPIENTS", []) or []),
             "auto_open_downloads_sidebar": app_config.get("AUTO_OPEN_DOWNLOADS_SIDEBAR", True),
             "download_to_browser": app_config.get("DOWNLOAD_TO_BROWSER", False),
             "settings_enabled": _is_config_dir_writable(),
@@ -1066,8 +1060,6 @@ def api_login() -> Union[Response, Tuple[Response, int]]:
     Returns:
         flask.Response: JSON with success status or error message.
     """
-    from shelfmark.core.settings_registry import load_config_file
-
     try:
         ip_address = get_client_ip()
         data = request.get_json()
@@ -1111,22 +1103,8 @@ def api_login() -> Union[Response, Tuple[Response, int]]:
             try:
                 db_user = user_db.get_user(username=username)
 
-                # If user not in DB, try legacy config credentials and auto-migrate
                 if not db_user:
-                    security_config = load_config_file("security")
-                    stored_username = security_config.get("BUILTIN_USERNAME", "")
-                    stored_hash = security_config.get("BUILTIN_PASSWORD_HASH", "")
-
-                    if username == stored_username and stored_hash and check_password_hash(stored_hash, password):
-                        # Auto-migrate: create admin user in DB from config
-                        db_user = user_db.create_user(
-                            username=stored_username,
-                            password_hash=stored_hash,
-                            role="admin",
-                        )
-                        logger.info(f"Migrated builtin admin '{stored_username}' to users database")
-                    else:
-                        return _failed_login_response(username, ip_address)
+                    return _failed_login_response(username, ip_address)
 
                 # Authenticate against DB user
                 if db_user:
@@ -1160,7 +1138,7 @@ def api_login() -> Union[Response, Tuple[Response, int]]:
                 db_uri = f"file:{db_path}?mode=ro&immutable=1"
                 conn = sqlite3.connect(db_uri, uri=True)
                 cur = conn.cursor()
-                cur.execute("SELECT password, role FROM user WHERE name = ?", (username,))
+                cur.execute("SELECT password, role, email FROM user WHERE name = ?", (username,))
                 row = cur.fetchone()
                 conn.close()
 
@@ -1171,10 +1149,25 @@ def api_login() -> Union[Response, Tuple[Response, int]]:
                 # Check if user has admin role (ROLE_ADMIN = 1, bit flag)
                 user_role = row[1] if row[1] is not None else 0
                 is_admin = (user_role & 1) == 1
+                cwa_email = row[2] or None
+
+                db_user_id = None
+                if user_db is not None:
+                    role = "admin" if is_admin else "user"
+                    db_user, _ = upsert_cwa_user(
+                        user_db,
+                        cwa_username=username,
+                        cwa_email=cwa_email,
+                        role=role,
+                        context="cwa_login",
+                    )
+                    db_user_id = db_user["id"]
 
                 # Successful authentication - create session and clear failed attempts
                 session['user_id'] = username
                 session['is_admin'] = is_admin
+                if db_user_id is not None:
+                    session['db_user_id'] = db_user_id
                 session.permanent = remember_me
                 clear_failed_logins(username)
                 logger.info(f"Login successful for user '{username}' from IP {ip_address} (CWA auth, is_admin={is_admin}, remember_me={remember_me})")
@@ -1234,6 +1227,7 @@ def api_auth_check() -> Union[Response, Tuple[Response, int]]:
 
     try:
         security_config = load_config_file("security")
+        users_config = load_config_file("users")
         auth_mode = get_auth_mode()
 
         # If no authentication is configured, access is allowed (full admin)
@@ -1248,35 +1242,28 @@ def api_auth_check() -> Union[Response, Tuple[Response, int]]:
         # Check if user has a valid session
         is_authenticated = 'user_id' in session
 
-        # Determine admin status for settings access
-        # - Built-in auth: check DB user role (legacy single-user is always admin)
-        # - CWA auth: check RESTRICT_SETTINGS_TO_ADMIN setting
-        # - Proxy auth: check PROXY_AUTH_RESTRICT_SETTINGS_TO_ADMIN setting
-        if auth_mode == "builtin":
-            is_admin = session.get('is_admin', True)
-        elif auth_mode == "cwa":
-            restrict_to_admin = security_config.get("CWA_RESTRICT_SETTINGS_TO_ADMIN", False)
-            if restrict_to_admin:
-                is_admin = session.get('is_admin', False)
-            else:
-                # All authenticated CWA users can access settings
-                is_admin = True
-        elif auth_mode == "proxy":
-            restrict_to_admin = security_config.get("PROXY_AUTH_RESTRICT_SETTINGS_TO_ADMIN", False)
-            is_admin = session.get('is_admin', not restrict_to_admin)
-        elif auth_mode == "oidc":
-            # OIDC admin status is determined by group membership during login
-            # and stored in session['is_admin'] - use it directly
-            is_admin = session.get('is_admin', False)
-        else:
-            is_admin = False
+        is_admin = get_auth_check_admin_status(auth_mode, users_config, session)
+
+        display_name = None
+        if is_authenticated and session.get('db_user_id'):
+            try:
+                from shelfmark.core.user_db import UserDB
+                import os
+                user_db = UserDB(os.path.join(os.environ.get("CONFIG_DIR", "/config"), "users.db"))
+                user_db.initialize()
+                db_user = user_db.get_user(user_id=session['db_user_id'])
+                if db_user:
+                    display_name = db_user.get("display_name") or None
+            except Exception:
+                pass
 
         response_data = {
             "authenticated": is_authenticated,
             "auth_required": True,
             "auth_mode": auth_mode,
             "is_admin": is_admin if is_authenticated else False,
-            "username": session.get('user_id') if is_authenticated else None
+            "username": session.get('user_id') if is_authenticated else None,
+            "display_name": display_name,
         }
         
         # Add logout URL for proxy auth if configured
@@ -1284,6 +1271,12 @@ def api_auth_check() -> Union[Response, Tuple[Response, int]]:
             logout_url = security_config.get("PROXY_AUTH_LOGOUT_URL", "")
             if logout_url:
                 response_data["logout_url"] = logout_url
+
+        # Add custom OIDC button label if configured
+        if auth_mode == "oidc":
+            oidc_button_label = security_config.get("OIDC_BUTTON_LABEL", "")
+            if oidc_button_label:
+                response_data["oidc_button_label"] = oidc_button_label
         
         return jsonify(response_data)
     except Exception as e:

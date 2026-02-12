@@ -1,10 +1,12 @@
 """SQLite user database for multi-user support."""
 
 import json
+import os
 import sqlite3
 import threading
 from typing import Any, Dict, List, Optional
 
+from shelfmark.core.auth_modes import AUTH_SOURCE_BUILTIN, AUTH_SOURCE_SET
 from shelfmark.core.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -17,6 +19,7 @@ CREATE TABLE IF NOT EXISTS users (
     display_name  TEXT,
     password_hash TEXT,
     oidc_subject  TEXT UNIQUE,
+    auth_source   TEXT NOT NULL DEFAULT 'builtin',
     role          TEXT NOT NULL DEFAULT 'user',
     created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -28,8 +31,53 @@ CREATE TABLE IF NOT EXISTS user_settings (
 """
 
 
+def get_users_db_path(config_dir: Optional[str] = None) -> str:
+    """Return the configured users database path."""
+    root = config_dir or os.environ.get("CONFIG_DIR", "/config")
+    return os.path.join(root, "users.db")
+
+
+def sync_builtin_admin_user(
+    username: str,
+    password_hash: str,
+    db_path: Optional[str] = None,
+) -> None:
+    """Ensure a local admin user exists for configured builtin credentials."""
+    normalized_username = (username or "").strip()
+    normalized_hash = password_hash or ""
+    if not normalized_username or not normalized_hash:
+        return
+
+    user_db = UserDB(db_path or get_users_db_path())
+    user_db.initialize()
+
+    existing = user_db.get_user(username=normalized_username)
+    if existing:
+        updates: dict[str, Any] = {}
+        if existing.get("password_hash") != normalized_hash:
+            updates["password_hash"] = normalized_hash
+        if existing.get("role") != "admin":
+            updates["role"] = "admin"
+        if existing.get("auth_source") != AUTH_SOURCE_BUILTIN:
+            updates["auth_source"] = AUTH_SOURCE_BUILTIN
+        if updates:
+            user_db.update_user(existing["id"], **updates)
+            logger.info(f"Updated local admin user '{normalized_username}' from builtin settings")
+        return
+
+    user_db.create_user(
+        username=normalized_username,
+        password_hash=normalized_hash,
+        auth_source=AUTH_SOURCE_BUILTIN,
+        role="admin",
+    )
+    logger.info(f"Created local admin user '{normalized_username}' from builtin settings")
+
+
 class UserDB:
     """Thread-safe SQLite user database."""
+
+    _VALID_AUTH_SOURCES = set(AUTH_SOURCE_SET)
 
     def __init__(self, db_path: str):
         self._db_path = db_path
@@ -47,11 +95,32 @@ class UserDB:
             conn = self._connect()
             try:
                 conn.executescript(_CREATE_TABLES_SQL)
-                conn.execute("PRAGMA journal_mode=WAL")
+                self._migrate_auth_source_column(conn)
                 conn.commit()
+                # WAL mode must be changed outside an open transaction.
+                conn.execute("PRAGMA journal_mode=WAL")
             finally:
                 conn.close()
         logger.info(f"User database initialized at {self._db_path}")
+
+    def _migrate_auth_source_column(self, conn: sqlite3.Connection) -> None:
+        """Ensure users.auth_source exists and backfill historical rows."""
+        columns = conn.execute("PRAGMA table_info(users)").fetchall()
+        column_names = {str(col["name"]) for col in columns}
+
+        if "auth_source" not in column_names:
+            conn.execute(
+                "ALTER TABLE users ADD COLUMN auth_source TEXT NOT NULL DEFAULT 'builtin'"
+            )
+
+        # Backfill OIDC-origin users created before auth_source existed.
+        conn.execute(
+            "UPDATE users SET auth_source = 'oidc' WHERE oidc_subject IS NOT NULL"
+        )
+        # Defensive cleanup for any legacy null/blank values.
+        conn.execute(
+            "UPDATE users SET auth_source = 'builtin' WHERE auth_source IS NULL OR auth_source = ''"
+        )
 
     def create_user(
         self,
@@ -60,16 +129,29 @@ class UserDB:
         display_name: Optional[str] = None,
         password_hash: Optional[str] = None,
         oidc_subject: Optional[str] = None,
+        auth_source: str = "builtin",
         role: str = "user",
     ) -> Dict[str, Any]:
         """Create a new user. Raises ValueError if username or oidc_subject already exists."""
+        if auth_source not in self._VALID_AUTH_SOURCES:
+            raise ValueError(f"Invalid auth_source: {auth_source}")
         with self._lock:
             conn = self._connect()
             try:
                 cursor = conn.execute(
-                    """INSERT INTO users (username, email, display_name, password_hash, oidc_subject, role)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (username, email, display_name, password_hash, oidc_subject, role),
+                    """INSERT INTO users (
+                           username, email, display_name, password_hash, oidc_subject, auth_source, role
+                       )
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        username,
+                        email,
+                        display_name,
+                        password_hash,
+                        oidc_subject,
+                        auth_source,
+                        role,
+                    ),
                 )
                 conn.commit()
                 user_id = cursor.lastrowid
@@ -108,7 +190,14 @@ class UserDB:
         row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         return dict(row) if row else None
 
-    _ALLOWED_UPDATE_COLUMNS = {"email", "display_name", "password_hash", "oidc_subject", "role"}
+    _ALLOWED_UPDATE_COLUMNS = {
+        "email",
+        "display_name",
+        "password_hash",
+        "oidc_subject",
+        "auth_source",
+        "role",
+    }
 
     def update_user(self, user_id: int, **kwargs) -> None:
         """Update user fields. Raises ValueError if user not found or invalid column."""
@@ -117,6 +206,8 @@ class UserDB:
         for k in kwargs:
             if k not in self._ALLOWED_UPDATE_COLUMNS:
                 raise ValueError(f"Invalid column: {k}")
+        if "auth_source" in kwargs and kwargs["auth_source"] not in self._VALID_AUTH_SOURCES:
+            raise ValueError(f"Invalid auth_source: {kwargs['auth_source']}")
         with self._lock:
             conn = self._connect()
             try:

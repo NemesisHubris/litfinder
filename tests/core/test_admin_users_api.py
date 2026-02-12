@@ -5,6 +5,7 @@ Tests CRUD endpoints for managing users from the admin panel.
 """
 
 import os
+import sqlite3
 import tempfile
 
 from unittest.mock import patch
@@ -105,9 +106,60 @@ class TestAdminUsersListEndpoint:
         users = resp.json
         assert "password_hash" not in users[0]
 
+    def test_list_users_includes_auth_source_and_is_active(self, admin_client, user_db):
+        user_db.create_user(username="local_user", auth_source="builtin")
+        user_db.create_user(
+            username="oidc_user",
+            oidc_subject="oidc-sub-123",
+            auth_source="oidc",
+        )
+        user_db.create_user(username="proxy_user", auth_source="proxy")
+
+        with patch("shelfmark.core.admin_routes._get_auth_mode", return_value="builtin"):
+            resp = admin_client.get("/api/admin/users")
+
+        assert resp.status_code == 200
+        by_username = {u["username"]: u for u in resp.json}
+
+        assert by_username["local_user"]["auth_source"] == "builtin"
+        assert by_username["local_user"]["is_active"] is True
+        assert by_username["local_user"]["edit_capabilities"]["canSetPassword"] is True
+        assert by_username["local_user"]["edit_capabilities"]["canEditRole"] is True
+        assert by_username["local_user"]["edit_capabilities"]["canEditEmail"] is True
+
+        assert by_username["oidc_user"]["auth_source"] == "oidc"
+        assert by_username["oidc_user"]["is_active"] is False
+        assert by_username["oidc_user"]["edit_capabilities"]["canSetPassword"] is False
+        assert by_username["oidc_user"]["edit_capabilities"]["canEditRole"] is False
+        assert by_username["oidc_user"]["edit_capabilities"]["canEditEmail"] is False
+        assert by_username["oidc_user"]["edit_capabilities"]["canEditDisplayName"] is False
+
+        assert by_username["proxy_user"]["auth_source"] == "proxy"
+        assert by_username["proxy_user"]["is_active"] is False
+        assert by_username["proxy_user"]["edit_capabilities"]["canSetPassword"] is False
+        assert by_username["proxy_user"]["edit_capabilities"]["canEditRole"] is False
+        assert by_username["proxy_user"]["edit_capabilities"]["canEditEmail"] is True
+
     def test_list_users_requires_admin(self, regular_client):
         resp = regular_client.get("/api/admin/users")
         assert resp.status_code == 403
+
+    def test_list_users_oidc_role_editable_when_group_auth_disabled(self, admin_client, user_db):
+        user_db.create_user(
+            username="oidc_user",
+            oidc_subject="oidc-sub-123",
+            auth_source="oidc",
+        )
+
+        with patch(
+            "shelfmark.core.admin_routes.load_config_file",
+            return_value={"OIDC_USE_ADMIN_GROUP": False},
+        ):
+            resp = admin_client.get("/api/admin/users")
+
+        assert resp.status_code == 200
+        oidc_user = next(u for u in resp.json if u["username"] == "oidc_user")
+        assert oidc_user["edit_capabilities"]["canEditRole"] is True
 
     def test_list_users_no_session_allows_access_in_no_auth(self, no_session_client):
         """No session + no-auth mode = admin access allowed."""
@@ -273,6 +325,36 @@ class TestAdminUserCreateEndpoint:
         assert resp.status_code == 201
         assert resp.json["role"] == "user"
 
+    def test_create_user_rejected_in_proxy_mode(self, admin_client):
+        with patch("shelfmark.core.admin_routes._get_auth_mode", return_value="proxy"):
+            resp = admin_client.post(
+                "/api/admin/users",
+                json={"username": "alice", "password": "pass1234"},
+            )
+
+        assert resp.status_code == 400
+        assert "Local user creation is disabled" in resp.json["error"]
+
+    def test_create_user_rejected_in_cwa_mode(self, admin_client):
+        with patch("shelfmark.core.admin_routes._get_auth_mode", return_value="cwa"):
+            resp = admin_client.post(
+                "/api/admin/users",
+                json={"username": "alice", "password": "pass1234"},
+            )
+
+        assert resp.status_code == 400
+        assert "Local user creation is disabled" in resp.json["error"]
+
+    def test_create_user_allowed_in_oidc_mode(self, admin_client):
+        with patch("shelfmark.core.admin_routes._get_auth_mode", return_value="oidc"):
+            resp = admin_client.post(
+                "/api/admin/users",
+                json={"username": "alice", "password": "pass1234"},
+            )
+
+        assert resp.status_code == 201
+        assert resp.json["username"] == "alice"
+
 
 # ---------------------------------------------------------------------------
 # GET /api/admin/users/<id>
@@ -292,10 +374,10 @@ class TestAdminUserGetEndpoint:
 
     def test_get_user_includes_settings(self, admin_client, user_db):
         user = user_db.create_user(username="alice")
-        user_db.set_user_settings(user["id"], {"booklore_library_id": 5})
+        user_db.set_user_settings(user["id"], {"BOOKLORE_LIBRARY_ID": 5})
 
         resp = admin_client.get(f"/api/admin/users/{user['id']}")
-        assert resp.json["settings"]["booklore_library_id"] == 5
+        assert resp.json["settings"]["BOOKLORE_LIBRARY_ID"] == 5
 
     def test_get_user_empty_settings(self, admin_client, user_db):
         user = user_db.create_user(username="alice")
@@ -375,27 +457,38 @@ class TestAdminUserUpdateEndpoint:
 
         resp = admin_client.put(
             f"/api/admin/users/{user['id']}",
-            json={"settings": {"booklore_library_id": 3}},
+            json={"settings": {"BOOKLORE_LIBRARY_ID": 3}},
         )
         assert resp.status_code == 200
         settings = user_db.get_user_settings(user["id"])
-        assert settings["booklore_library_id"] == 3
+        assert settings["BOOKLORE_LIBRARY_ID"] == 3
 
-    def test_update_settings_merges(self, admin_client, user_db):
+    def test_update_user_settings_accepts_audiobook_destination(self, admin_client, user_db):
         user = user_db.create_user(username="alice")
-        user_db.set_user_settings(user["id"], {"existing_key": "keep"})
 
         resp = admin_client.put(
             f"/api/admin/users/{user['id']}",
-            json={"settings": {"new_key": "added"}},
+            json={"settings": {"DESTINATION_AUDIOBOOK": "/audiobooks/alice"}},
         )
         assert resp.status_code == 200
-        assert resp.json["settings"]["existing_key"] == "keep"
-        assert resp.json["settings"]["new_key"] == "added"
+        settings = user_db.get_user_settings(user["id"])
+        assert settings["DESTINATION_AUDIOBOOK"] == "/audiobooks/alice"
+
+    def test_update_settings_merges(self, admin_client, user_db):
+        user = user_db.create_user(username="alice")
+        user_db.set_user_settings(user["id"], {"DESTINATION": "/books/alice"})
+
+        resp = admin_client.put(
+            f"/api/admin/users/{user['id']}",
+            json={"settings": {"BOOKLORE_LIBRARY_ID": "2"}},
+        )
+        assert resp.status_code == 200
+        assert resp.json["settings"]["DESTINATION"] == "/books/alice"
+        assert resp.json["settings"]["BOOKLORE_LIBRARY_ID"] == "2"
 
     def test_update_response_includes_settings(self, admin_client, user_db):
         user = user_db.create_user(username="alice")
-        user_db.set_user_settings(user["id"], {"theme": "dark"})
+        user_db.set_user_settings(user["id"], {"DESTINATION": "/books/alice"})
 
         resp = admin_client.put(
             f"/api/admin/users/{user['id']}",
@@ -403,7 +496,40 @@ class TestAdminUserUpdateEndpoint:
         )
         assert resp.status_code == 200
         assert "settings" in resp.json
-        assert resp.json["settings"]["theme"] == "dark"
+        assert resp.json["settings"]["DESTINATION"] == "/books/alice"
+
+    def test_update_user_settings_rejects_unknown_key(self, admin_client, user_db):
+        user = user_db.create_user(username="alice")
+
+        resp = admin_client.put(
+            f"/api/admin/users/{user['id']}",
+            json={"settings": {"UNKNOWN_SETTING": "value"}},
+        )
+        assert resp.status_code == 400
+        assert resp.json["error"] == "Invalid settings payload"
+        assert any("Unknown setting: UNKNOWN_SETTING" in msg for msg in resp.json["details"])
+
+    def test_update_user_settings_rejects_non_overridable_key(self, admin_client, user_db):
+        user = user_db.create_user(username="alice")
+
+        resp = admin_client.put(
+            f"/api/admin/users/{user['id']}",
+            json={"settings": {"FILE_ORGANIZATION": "rename"}},
+        )
+        assert resp.status_code == 400
+        assert resp.json["error"] == "Invalid settings payload"
+        assert any("Setting not user-overridable: FILE_ORGANIZATION" in msg for msg in resp.json["details"])
+
+    def test_update_user_settings_rejects_lowercase_key(self, admin_client, user_db):
+        user = user_db.create_user(username="alice")
+
+        resp = admin_client.put(
+            f"/api/admin/users/{user['id']}",
+            json={"settings": {"destination": "/books/alice"}},
+        )
+        assert resp.status_code == 400
+        assert resp.json["error"] == "Invalid settings payload"
+        assert any("Unknown setting: destination" in msg for msg in resp.json["details"])
 
     def test_update_response_excludes_password_hash(self, admin_client, user_db):
         user = user_db.create_user(username="alice", password_hash="secret")
@@ -428,6 +554,59 @@ class TestAdminUserUpdateEndpoint:
             json={"role": "admin"},
         )
         assert resp.status_code == 403
+
+    def test_update_proxy_role_rejected(self, admin_client, user_db):
+        user = user_db.create_user(username="proxyuser", role="user", auth_source="proxy")
+
+        resp = admin_client.put(
+            f"/api/admin/users/{user['id']}",
+            json={"role": "admin"},
+        )
+
+        assert resp.status_code == 400
+        assert "Cannot change role for PROXY users" in resp.json["error"]
+
+    def test_update_proxy_role_noop_allowed(self, admin_client, user_db):
+        user = user_db.create_user(username="proxyuser", role="user", auth_source="proxy")
+
+        resp = admin_client.put(
+            f"/api/admin/users/{user['id']}",
+            json={"role": "user", "display_name": "Proxy User"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json["display_name"] == "Proxy User"
+
+    def test_update_cwa_email_rejected(self, admin_client, user_db):
+        user = user_db.create_user(
+            username="cwauser",
+            email="old@example.com",
+            auth_source="cwa",
+        )
+
+        resp = admin_client.put(
+            f"/api/admin/users/{user['id']}",
+            json={"email": "new@example.com"},
+        )
+
+        assert resp.status_code == 400
+        assert "Cannot change email for CWA users" in resp.json["error"]
+
+    def test_update_oidc_email_rejected(self, admin_client, user_db):
+        user = user_db.create_user(
+            username="oidcuser",
+            email="old@example.com",
+            oidc_subject="sub-oidc-1",
+            auth_source="oidc",
+        )
+
+        resp = admin_client.put(
+            f"/api/admin/users/{user['id']}",
+            json={"email": "new@example.com"},
+        )
+
+        assert resp.status_code == 400
+        assert "Cannot change email for OIDC users" in resp.json["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +681,117 @@ class TestAdminUserPasswordUpdate:
         assert "password_hash" not in resp.json
         assert "password" not in resp.json
 
+    def test_update_password_rejected_for_proxy_user(self, admin_client, user_db):
+        user = user_db.create_user(username="proxyuser", auth_source="proxy")
+
+        resp = admin_client.put(
+            f"/api/admin/users/{user['id']}",
+            json={"password": "newpass99"},
+        )
+
+        assert resp.status_code == 400
+        assert "Cannot set password for PROXY users" in resp.json["error"]
+
+
+# ---------------------------------------------------------------------------
+# POST /api/admin/users/sync-cwa
+# ---------------------------------------------------------------------------
+
+
+class TestAdminSyncCwaUsersEndpoint:
+    """Tests for POST /api/admin/users/sync-cwa."""
+
+    def test_sync_cwa_users_links_by_email_and_avoids_username_overwrite(
+        self,
+        admin_client,
+        user_db,
+        tmp_path,
+    ):
+        cwa_db_path = tmp_path / "app.db"
+        conn = sqlite3.connect(cwa_db_path)
+        try:
+            conn.execute(
+                """
+                CREATE TABLE user (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT,
+                    role INTEGER,
+                    email TEXT
+                )
+                """
+            )
+            conn.executemany(
+                "INSERT INTO user (name, role, email) VALUES (?, ?, ?)",
+                [
+                    ("alice", 1, "alice@example.com"),
+                    ("bob", 0, "bob@example.com"),
+                    (" ", 1, "skip@example.com"),
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        local_email_match = user_db.create_user(
+            username="alice_local",
+            email="alice@example.com",
+            role="user",
+            auth_source="builtin",
+        )
+        local_username_collision = user_db.create_user(
+            username="bob",
+            email="old@example.com",
+            role="admin",
+            auth_source="builtin",
+        )
+
+        with patch("shelfmark.core.admin_routes._get_auth_mode", return_value="cwa"):
+            with patch("shelfmark.core.admin_routes.CWA_DB_PATH", cwa_db_path):
+                resp = admin_client.post("/api/admin/users/sync-cwa")
+
+        assert resp.status_code == 200
+        assert resp.json["success"] is True
+        assert resp.json["created"] == 1
+        assert resp.json["updated"] == 1
+        assert resp.json["total"] == 2
+
+        alice_linked = user_db.get_user(user_id=local_email_match["id"])
+        assert alice_linked is not None
+        assert alice_linked["username"] == "alice_local"
+        assert alice_linked["auth_source"] == "cwa"
+        assert alice_linked["role"] == "admin"
+        assert alice_linked["email"] == "alice@example.com"
+
+        bob_original = user_db.get_user(user_id=local_username_collision["id"])
+        assert bob_original is not None
+        assert bob_original["username"] == "bob"
+        assert bob_original["auth_source"] == "builtin"
+        assert bob_original["role"] == "admin"
+        assert bob_original["email"] == "old@example.com"
+
+        bob_cwa = next(
+            user for user in user_db.list_users()
+            if user.get("auth_source") == "cwa" and user.get("email") == "bob@example.com"
+        )
+        assert bob_cwa["username"].startswith("bob__cwa")
+        assert bob_cwa["role"] == "user"
+
+    def test_sync_cwa_users_rejected_when_not_in_cwa_mode(self, admin_client):
+        with patch("shelfmark.core.admin_routes._get_auth_mode", return_value="builtin"):
+            resp = admin_client.post("/api/admin/users/sync-cwa")
+
+        assert resp.status_code == 400
+        assert "only available" in resp.json["error"]
+
+    def test_sync_cwa_users_returns_503_when_db_unavailable(self, admin_client, tmp_path):
+        missing_db_path = tmp_path / "missing.db"
+        with patch("shelfmark.core.admin_routes._get_auth_mode", return_value="cwa"):
+            with patch("shelfmark.core.admin_routes.CWA_DB_PATH", missing_db_path):
+                resp = admin_client.post("/api/admin/users/sync-cwa")
+
+        assert resp.status_code == 503
+        assert "not available" in resp.json["error"]
+
 
 # ---------------------------------------------------------------------------
 # GET /api/admin/download-defaults
@@ -525,9 +815,10 @@ class TestAdminDownloadDefaults:
         config = {
             "BOOKS_OUTPUT_MODE": "folder",
             "DESTINATION": "/books",
+            "DESTINATION_AUDIOBOOK": "/audiobooks",
             "BOOKLORE_LIBRARY_ID": "2",
             "BOOKLORE_PATH_ID": "5",
-            "EMAIL_RECIPIENTS": [{"nickname": "kindle", "email": "me@kindle.com"}],
+            "EMAIL_RECIPIENT": "reader@example.com",
         }
         (plugins_dir / "downloads.json").write_text(json.dumps(config))
 
@@ -537,9 +828,10 @@ class TestAdminDownloadDefaults:
         data = resp.json
         assert data["BOOKS_OUTPUT_MODE"] == "folder"
         assert data["DESTINATION"] == "/books"
+        assert data["DESTINATION_AUDIOBOOK"] == "/audiobooks"
         assert data["BOOKLORE_LIBRARY_ID"] == "2"
         assert data["BOOKLORE_PATH_ID"] == "5"
-        assert data["EMAIL_RECIPIENTS"] == [{"nickname": "kindle", "email": "me@kindle.com"}]
+        assert data["EMAIL_RECIPIENT"] == "reader@example.com"
 
     def test_returns_defaults_when_no_config(self, admin_client, tmp_path):
         """If no downloads config file exists, return sensible defaults."""
@@ -553,6 +845,7 @@ class TestAdminDownloadDefaults:
         data = resp.json
         assert "BOOKS_OUTPUT_MODE" in data
         assert "DESTINATION" in data
+        assert "DESTINATION_AUDIOBOOK" in data
 
     def test_requires_admin(self, regular_client):
         resp = regular_client.get("/api/admin/download-defaults")
@@ -600,6 +893,208 @@ class TestAdminBookloreOptions:
 
 
 # ---------------------------------------------------------------------------
+# GET /api/admin/users/<id>/delivery-preferences
+# ---------------------------------------------------------------------------
+
+
+class TestAdminDeliveryPreferences:
+    """Tests for GET /api/admin/users/<id>/delivery-preferences."""
+
+    @pytest.fixture(autouse=True)
+    def setup_config(self, tmp_path, monkeypatch):
+        import json
+        from pathlib import Path
+
+        config_dir = str(tmp_path)
+        monkeypatch.setenv("CONFIG_DIR", config_dir)
+        monkeypatch.setattr("shelfmark.config.env.CONFIG_DIR", Path(config_dir))
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        downloads_config = {
+            "BOOKS_OUTPUT_MODE": "folder",
+            "DESTINATION": "/books",
+            "DESTINATION_AUDIOBOOK": "/audiobooks",
+            "BOOKLORE_LIBRARY_ID": "7",
+            "BOOKLORE_PATH_ID": "21",
+            "EMAIL_RECIPIENT": "global@example.com",
+        }
+        (plugins_dir / "downloads.json").write_text(json.dumps(downloads_config))
+
+        from shelfmark.core.config import config as app_config
+        app_config.refresh()
+
+    def test_returns_curated_fields_and_effective_values(self, admin_client, user_db):
+        user = user_db.create_user(username="alice")
+        user_db.set_user_settings(
+            user["id"],
+            {
+                "BOOKS_OUTPUT_MODE": "email",
+                "EMAIL_RECIPIENT": "alice@example.com",
+                "DESTINATION_AUDIOBOOK": "/audiobooks/alice",
+            },
+        )
+
+        resp = admin_client.get(f"/api/admin/users/{user['id']}/delivery-preferences")
+        assert resp.status_code == 200
+
+        data = resp.json
+        assert data["tab"] == "downloads"
+        assert data["keys"] == [
+            "BOOKS_OUTPUT_MODE",
+            "DESTINATION",
+            "BOOKLORE_LIBRARY_ID",
+            "BOOKLORE_PATH_ID",
+            "EMAIL_RECIPIENT",
+            "DESTINATION_AUDIOBOOK",
+        ]
+
+        field_keys = [field["key"] for field in data["fields"]]
+        assert set(field_keys) == set(data["keys"])
+
+        assert data["userOverrides"]["BOOKS_OUTPUT_MODE"] == "email"
+        assert data["userOverrides"]["EMAIL_RECIPIENT"] == "alice@example.com"
+        assert data["userOverrides"]["DESTINATION_AUDIOBOOK"] == "/audiobooks/alice"
+
+        assert data["effective"]["BOOKS_OUTPUT_MODE"]["source"] == "user_override"
+        assert data["effective"]["BOOKS_OUTPUT_MODE"]["value"] == "email"
+        assert data["effective"]["DESTINATION"]["source"] in {"global_config", "env_var"}
+        assert data["effective"]["BOOKLORE_LIBRARY_ID"]["source"] == "global_config"
+        assert data["effective"]["BOOKLORE_LIBRARY_ID"]["value"] == "7"
+        assert data["effective"]["EMAIL_RECIPIENT"]["source"] == "user_override"
+        assert data["effective"]["EMAIL_RECIPIENT"]["value"] == "alice@example.com"
+        assert data["effective"]["DESTINATION_AUDIOBOOK"]["source"] == "user_override"
+        assert data["effective"]["DESTINATION_AUDIOBOOK"]["value"] == "/audiobooks/alice"
+
+    def test_returns_404_for_unknown_user(self, admin_client):
+        resp = admin_client.get("/api/admin/users/9999/delivery-preferences")
+        assert resp.status_code == 404
+
+    def test_requires_admin(self, regular_client, user_db):
+        user = user_db.create_user(username="alice")
+        resp = regular_client.get(f"/api/admin/users/{user['id']}/delivery-preferences")
+        assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# GET /api/admin/settings/overrides-summary
+# ---------------------------------------------------------------------------
+
+
+class TestAdminOverridesSummary:
+    """Tests for GET /api/admin/settings/overrides-summary."""
+
+    def test_returns_override_counts_for_downloads_tab(self, admin_client, user_db):
+        alice = user_db.create_user(username="alice")
+        bob = user_db.create_user(username="bob")
+
+        user_db.set_user_settings(
+            alice["id"],
+            {"BOOKS_OUTPUT_MODE": "folder", "DESTINATION": "/books/alice"},
+        )
+        user_db.set_user_settings(
+            bob["id"],
+            {
+                "BOOKS_OUTPUT_MODE": "email",
+                "DESTINATION": "/books/bob",
+                "EMAIL_RECIPIENT": "bob@example.com",
+            },
+        )
+
+        resp = admin_client.get("/api/admin/settings/overrides-summary?tab=downloads")
+        assert resp.status_code == 200
+
+        data = resp.json
+        assert data["tab"] == "downloads"
+        keys = data["keys"]
+
+        assert keys["BOOKS_OUTPUT_MODE"]["count"] == 2
+        assert keys["DESTINATION"]["count"] == 2
+        assert keys["EMAIL_RECIPIENT"]["count"] == 1
+        assert "BOOKLORE_LIBRARY_ID" not in keys
+
+        destination_users = {u["username"] for u in keys["DESTINATION"]["users"]}
+        assert destination_users == {"alice", "bob"}
+
+        email_users = keys["EMAIL_RECIPIENT"]["users"]
+        assert len(email_users) == 1
+        assert email_users[0]["username"] == "bob"
+        assert email_users[0]["value"] == "bob@example.com"
+
+    def test_returns_404_for_unknown_tab(self, admin_client):
+        resp = admin_client.get("/api/admin/settings/overrides-summary?tab=does-not-exist")
+        assert resp.status_code == 404
+
+    def test_requires_admin(self, regular_client):
+        resp = regular_client.get("/api/admin/settings/overrides-summary?tab=downloads")
+        assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# GET /api/admin/users/<id>/effective-settings
+# ---------------------------------------------------------------------------
+
+
+class TestAdminEffectiveSettings:
+    """Tests for GET /api/admin/users/<id>/effective-settings."""
+
+    @pytest.fixture(autouse=True)
+    def setup_config(self, tmp_path, monkeypatch):
+        import json
+        from pathlib import Path
+
+        config_dir = str(tmp_path)
+        monkeypatch.setenv("CONFIG_DIR", config_dir)
+        monkeypatch.setattr("shelfmark.config.env.CONFIG_DIR", Path(config_dir))
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        downloads_config = {
+            "BOOKS_OUTPUT_MODE": "booklore",
+            "BOOKLORE_LIBRARY_ID": "7",
+        }
+        (plugins_dir / "downloads.json").write_text(json.dumps(downloads_config))
+
+        monkeypatch.setenv("INGEST_DIR", "/env/books")
+
+        # Ensure config singleton sees the current test env/config dir.
+        from shelfmark.core.config import config as app_config
+        app_config.refresh()
+
+    def test_returns_effective_values_with_sources(self, admin_client, user_db):
+        user = user_db.create_user(username="alice")
+        user_db.set_user_settings(
+            user["id"],
+            {"EMAIL_RECIPIENT": "alice@kindle.com"},
+        )
+
+        resp = admin_client.get(f"/api/admin/users/{user['id']}/effective-settings")
+        assert resp.status_code == 200
+
+        data = resp.json
+        assert data["DESTINATION"]["value"] == "/env/books"
+        assert data["DESTINATION"]["source"] == "env_var"
+
+        assert data["BOOKLORE_LIBRARY_ID"]["value"] == "7"
+        assert data["BOOKLORE_LIBRARY_ID"]["source"] == "global_config"
+
+        assert data["BOOKLORE_PATH_ID"]["value"] in ("", None)
+        assert data["BOOKLORE_PATH_ID"]["source"] == "default"
+
+        assert data["EMAIL_RECIPIENT"]["value"] == "alice@kindle.com"
+        assert data["EMAIL_RECIPIENT"]["source"] == "user_override"
+
+    def test_returns_404_for_unknown_user(self, admin_client):
+        resp = admin_client.get("/api/admin/users/9999/effective-settings")
+        assert resp.status_code == 404
+
+    def test_requires_admin(self, regular_client, user_db):
+        user = user_db.create_user(username="alice")
+        resp = regular_client.get(f"/api/admin/users/{user['id']}/effective-settings")
+        assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
 # DELETE /api/admin/users/<id>
 # ---------------------------------------------------------------------------
 
@@ -633,6 +1128,37 @@ class TestAdminUserDeleteEndpoint:
         resp = admin_client.get("/api/admin/users")
         assert len(resp.json) == 1
         assert resp.json[0]["username"] == "bob"
+
+    def test_delete_active_proxy_user_rejected(self, admin_client, user_db):
+        user = user_db.create_user(username="proxyuser", auth_source="proxy")
+
+        with patch("shelfmark.core.admin_routes._get_auth_mode", return_value="proxy"):
+            resp = admin_client.delete(f"/api/admin/users/{user['id']}")
+
+        assert resp.status_code == 400
+        assert "Cannot delete active PROXY users" in resp.json["error"]
+
+    def test_delete_inactive_proxy_user_allowed(self, admin_client, user_db):
+        user = user_db.create_user(username="proxyuser", auth_source="proxy")
+
+        with patch("shelfmark.core.admin_routes._get_auth_mode", return_value="builtin"):
+            resp = admin_client.delete(f"/api/admin/users/{user['id']}")
+
+        assert resp.status_code == 200
+        assert resp.json["success"] is True
+
+    def test_delete_active_oidc_user_allowed_when_auto_provision_enabled(self, admin_client, user_db):
+        user = user_db.create_user(
+            username="oidcuser",
+            oidc_subject="sub-123",
+            auth_source="oidc",
+        )
+
+        with patch("shelfmark.core.admin_routes._get_auth_mode", return_value="oidc"):
+            resp = admin_client.delete(f"/api/admin/users/{user['id']}")
+
+        assert resp.status_code == 200
+        assert resp.json["success"] is True
 
 
 # ---------------------------------------------------------------------------

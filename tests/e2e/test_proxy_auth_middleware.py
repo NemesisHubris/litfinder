@@ -57,7 +57,6 @@ class TestProxyAuthMiddleware:
                 "shelfmark.core.settings_registry.load_config_file",
                 return_value={
                     "PROXY_AUTH_USER_HEADER": "X-Auth-User",
-                    "PROXY_AUTH_RESTRICT_SETTINGS_TO_ADMIN": False,
                 },
             ):
                 with main_module.app.test_request_context(
@@ -68,7 +67,61 @@ class TestProxyAuthMiddleware:
                     assert result is None
                     assert main_module.session.get("user_id") == "proxyuser"
                     assert main_module.session.get("is_admin") is True
+                    db_user_id = main_module.session.get("db_user_id")
+                    assert db_user_id is not None
+                    db_user = main_module.user_db.get_user(user_id=db_user_id)
+                    assert db_user is not None
+                    assert db_user["username"] == "proxyuser"
+                    assert db_user["auth_source"] == "proxy"
                     assert main_module.session.permanent is False
+
+    def test_proxy_takes_over_existing_local_username(self, main_module):
+        existing = main_module.user_db.create_user(
+            username="proxy_takeover_local",
+            role="user",
+            auth_source="builtin",
+        )
+
+        with patch.object(main_module, "get_auth_mode", return_value="proxy"):
+            with patch(
+                "shelfmark.core.settings_registry.load_config_file",
+                return_value={"PROXY_AUTH_USER_HEADER": "X-Auth-User"},
+            ):
+                with main_module.app.test_request_context(
+                    "/api/search",
+                    headers={"X-Auth-User": "proxy_takeover_local"},
+                ):
+                    result = main_module.proxy_auth_middleware()
+                    assert result is None
+
+                    db_user_id = main_module.session.get("db_user_id")
+                    db_user = main_module.user_db.get_user(user_id=db_user_id)
+                    assert db_user is not None
+                    assert db_user["id"] == existing["id"]
+                    assert db_user["username"] == "proxy_takeover_local"
+                    assert db_user["auth_source"] == "proxy"
+
+    def test_reprovisions_when_proxy_identity_changes(self, main_module):
+        with patch.object(main_module, "get_auth_mode", return_value="proxy"):
+            with patch(
+                "shelfmark.core.settings_registry.load_config_file",
+                return_value={
+                    "PROXY_AUTH_USER_HEADER": "X-Auth-User",
+                },
+            ):
+                with main_module.app.test_request_context(
+                    "/api/search",
+                    headers={"X-Auth-User": "proxyuser2"},
+                ):
+                    main_module.session["user_id"] = "old-user"
+                    main_module.session["db_user_id"] = 999999
+
+                    result = main_module.proxy_auth_middleware()
+                    assert result is None
+                    assert main_module.session.get("user_id") == "proxyuser2"
+                    db_user_id = main_module.session.get("db_user_id")
+                    db_user = main_module.user_db.get_user(user_id=db_user_id)
+                    assert db_user["username"] == "proxyuser2"
 
     def test_returns_401_when_header_missing_on_protected_path(self, main_module):
         with patch.object(main_module, "get_auth_mode", return_value="proxy"):
@@ -89,7 +142,6 @@ class TestProxyAuthMiddleware:
                 "shelfmark.core.settings_registry.load_config_file",
                 return_value={
                     "PROXY_AUTH_USER_HEADER": "X-Auth-User",
-                    "PROXY_AUTH_RESTRICT_SETTINGS_TO_ADMIN": True,
                     "PROXY_AUTH_ADMIN_GROUP_HEADER": "X-Auth-Groups",
                     "PROXY_AUTH_ADMIN_GROUP_NAME": "admins",
                 },
@@ -139,14 +191,15 @@ class TestLoginRequiredDecorator:
 
         assert resp[0]["success"] is True
 
-    def test_builtin_mode_does_not_apply_cwa_admin_setting(self, main_module, view):
+    def test_settings_access_not_restricted_when_global_toggle_off(self, main_module, view):
         with patch.object(main_module, "get_auth_mode", return_value="builtin"):
             with patch(
                 "shelfmark.core.settings_registry.load_config_file",
-                return_value={"CWA_RESTRICT_SETTINGS_TO_ADMIN": True},
+                return_value={"RESTRICT_SETTINGS_TO_ADMIN": False},
             ):
                 with main_module.app.test_request_context("/api/settings/general"):
-                    main_module.session["user_id"] = "admin"
+                    main_module.session["user_id"] = "user"
+                    main_module.session["is_admin"] = False
                     decorated = main_module.login_required(view)
                     resp = decorated()
 
@@ -156,7 +209,7 @@ class TestLoginRequiredDecorator:
         with patch.object(main_module, "get_auth_mode", return_value="proxy"):
             with patch(
                 "shelfmark.core.settings_registry.load_config_file",
-                return_value={"PROXY_AUTH_RESTRICT_SETTINGS_TO_ADMIN": True},
+                return_value={"RESTRICT_SETTINGS_TO_ADMIN": True},
             ):
                 with main_module.app.test_request_context("/api/settings/general"):
                     main_module.session["user_id"] = "user"
@@ -172,7 +225,7 @@ class TestLoginRequiredDecorator:
         with patch.object(main_module, "get_auth_mode", return_value="cwa"):
             with patch(
                 "shelfmark.core.settings_registry.load_config_file",
-                return_value={"CWA_RESTRICT_SETTINGS_TO_ADMIN": True},
+                return_value={"RESTRICT_SETTINGS_TO_ADMIN": True},
             ):
                 with main_module.app.test_request_context("/api/settings/general"):
                     main_module.session["user_id"] = "user"

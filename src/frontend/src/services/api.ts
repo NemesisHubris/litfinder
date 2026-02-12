@@ -1,5 +1,5 @@
 import { Book, StatusData, AppConfig, LoginCredentials, AuthResponse, ReleaseSource, ReleasesResponse } from '../types';
-import { SettingsResponse, ActionResult, UpdateResult } from '../types/settings';
+import { SettingsResponse, ActionResult, UpdateResult, SettingsTab } from '../types/settings';
 import { MetadataBookData, transformMetadataToBook } from '../utils/bookTransformers';
 import { getApiBase } from '../utils/basePath';
 
@@ -189,12 +189,9 @@ export const getMetadataBookInfo = async (provider: string, bookId: string): Pro
   return transformMetadataToBook(response);
 };
 
-export const downloadBook = async (id: string, emailRecipient?: string): Promise<void> => {
+export const downloadBook = async (id: string): Promise<void> => {
   const params = new URLSearchParams();
   params.set('id', id);
-  if (emailRecipient) {
-    params.set('email_recipient', emailRecipient);
-  }
   await fetchJSON(`${API.download}?${params.toString()}`);
 };
 
@@ -219,7 +216,6 @@ export const downloadRelease = async (release: {
   series_position?: number;
   subtitle?: string;
   search_author?: string;
-  email_recipient?: string;
 }): Promise<void> => {
   await fetchJSON(`${API_BASE}/releases/download`, {
     method: 'POST',
@@ -264,6 +260,10 @@ export const checkAuth = async (): Promise<AuthResponse> => {
 // Settings API functions
 export const getSettings = async (): Promise<SettingsResponse> => {
   return fetchJSON<SettingsResponse>(API.settings);
+};
+
+export const getSettingsTab = async (tabName: string): Promise<SettingsTab> => {
+  return fetchJSON<SettingsTab>(`${API.settings}/${tabName}`);
 };
 
 export const updateSettings = async (
@@ -382,14 +382,27 @@ export const getReleases = async (
 
 // Admin user management API
 
+export type AdminAuthSource = 'builtin' | 'oidc' | 'proxy' | 'cwa';
+
+export interface AdminUserEditCapabilities {
+  authSource: AdminAuthSource;
+  canSetPassword: boolean;
+  canEditRole: boolean;
+  canEditEmail: boolean;
+  canEditDisplayName: boolean;
+}
+
 export interface AdminUser {
   id: number;
   username: string;
   email: string | null;
   display_name: string | null;
   role: string;
+  auth_source: AdminAuthSource;
+  is_active: boolean;
   oidc_subject: string | null;
   created_at: string;
+  edit_capabilities: AdminUserEditCapabilities;
   settings?: Record<string, unknown>;
 }
 
@@ -429,12 +442,27 @@ export const deleteAdminUser = async (userId: number): Promise<{ success: boolea
   });
 };
 
+export interface CwaUserSyncResult {
+  success: boolean;
+  message: string;
+  created: number;
+  updated: number;
+  total: number;
+}
+
+export const syncAdminCwaUsers = async (): Promise<CwaUserSyncResult> => {
+  return fetchJSON<CwaUserSyncResult>(`${API_BASE}/admin/users/sync-cwa`, {
+    method: 'POST',
+  });
+};
+
 export interface DownloadDefaults {
   BOOKS_OUTPUT_MODE: string;
   DESTINATION: string;
+  DESTINATION_AUDIOBOOK: string;
   BOOKLORE_LIBRARY_ID: string;
   BOOKLORE_PATH_ID: string;
-  EMAIL_RECIPIENTS: Array<{ nickname: string; email: string }>;
+  EMAIL_RECIPIENT: string;
   OIDC_ADMIN_GROUP: string;
   OIDC_USE_ADMIN_GROUP: boolean;
   OIDC_AUTO_PROVISION: boolean;
@@ -457,4 +485,41 @@ export interface BookloreOptions {
 
 export const getBookloreOptions = async (): Promise<BookloreOptions> => {
   return fetchJSON<BookloreOptions>(`${API_BASE}/admin/booklore-options`);
+};
+
+export interface DeliveryPreferencesResponse {
+  tab: string;
+  keys: string[];
+  fields: import('../types/settings').SettingsField[];
+  globalValues: Record<string, unknown>;
+  userOverrides: Record<string, unknown>;
+  effective: Record<string, { value: unknown; source: string }>;
+}
+
+export const getAdminDeliveryPreferences = async (
+  userId: number
+): Promise<DeliveryPreferencesResponse> => {
+  return fetchJSON<DeliveryPreferencesResponse>(`${API_BASE}/admin/users/${userId}/delivery-preferences`);
+};
+
+export interface SettingsOverrideUserDetail {
+  userId: number;
+  username: string;
+  value: unknown;
+}
+
+export interface SettingsOverrideKeySummary {
+  count: number;
+  users: SettingsOverrideUserDetail[];
+}
+
+export interface SettingsOverridesSummaryResponse {
+  tab: string;
+  keys: Record<string, SettingsOverrideKeySummary>;
+}
+
+export const getAdminSettingsOverridesSummary = async (
+  tabName: string
+): Promise<SettingsOverridesSummaryResponse> => {
+  return fetchJSON<SettingsOverridesSummaryResponse>(`${API_BASE}/admin/settings/overrides-summary?tab=${encodeURIComponent(tabName)}`);
 };
