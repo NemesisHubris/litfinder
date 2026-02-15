@@ -4,28 +4,19 @@ from typing import Any, Callable
 
 from flask import Flask, jsonify, request
 
+from shelfmark.config.notifications_settings import (
+    build_notification_test_result,
+    is_valid_notification_url,
+    normalize_notification_routes,
+)
 from shelfmark.core.settings_registry import load_config_file
+from shelfmark.core.user_settings_overrides import (
+    build_user_preferences_payload as _build_user_preferences_payload,
+    get_ordered_user_overridable_fields as _get_ordered_user_overridable_fields,
+    get_settings_registry as _get_settings_registry,
+)
 from shelfmark.core.user_db import UserDB
 from shelfmark.core.request_policy import parse_policy_mode, validate_policy_rules
-
-
-def _get_settings_registry():
-    # Ensure settings modules are loaded before reading registry metadata.
-    import shelfmark.config.settings  # noqa: F401
-    import shelfmark.config.security  # noqa: F401
-    import shelfmark.config.users_settings  # noqa: F401
-    from shelfmark.core import settings_registry
-
-    return settings_registry
-
-
-def _get_ordered_user_overridable_fields(tab_name: str) -> list[tuple[str, Any]]:
-    settings_registry = _get_settings_registry()
-    tab = settings_registry.get_settings_tab(tab_name)
-    if not tab:
-        return []
-    overridable_map = settings_registry.get_user_overridable_fields(tab_name=tab_name)
-    return [(field.key, field) for field in tab.fields if field.key in overridable_map]
 
 
 def validate_user_settings(settings: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
@@ -59,9 +50,46 @@ def validate_user_settings(settings: dict[str, Any]) -> tuple[dict[str, Any], li
                 valid[key] = normalized_rules
                 continue
 
+            if key == "USER_NOTIFICATION_ROUTES":
+                normalized_routes = normalize_notification_routes(value)
+                invalid_count = sum(
+                    1
+                    for row in normalized_routes
+                    if row.get("url") and not is_valid_notification_url(str(row.get("url")))
+                )
+                if invalid_count:
+                    errors.append(
+                        (
+                            f"Invalid value for {key}: found {invalid_count} invalid URL(s). "
+                            "Use URL values with a valid scheme, e.g. discord://... or ntfys://..."
+                        )
+                    )
+                    continue
+                valid[key] = normalized_routes
+                continue
+
             valid[key] = value
 
     return valid, errors
+
+
+def build_user_notification_test_response(
+    *,
+    user_id: int,
+    payload: Any,
+) -> tuple[dict[str, Any], int]:
+    from shelfmark.core.config import config as app_config
+
+    routes_input = app_config.get("USER_NOTIFICATION_ROUTES", [], user_id=user_id)
+    if isinstance(payload, dict):
+        if "USER_NOTIFICATION_ROUTES" in payload:
+            routes_input = payload.get("USER_NOTIFICATION_ROUTES")
+        elif "routes" in payload:
+            routes_input = payload.get("routes")
+
+    result = build_notification_test_result(routes_input, scope_label="personal")
+    status_code = 200 if result.get("success", False) else 400
+    return result, status_code
 
 
 def register_admin_settings_routes(
@@ -101,54 +129,40 @@ def register_admin_settings_routes(
         if not user:
             return jsonify({"error": "User not found"}), 404
 
-        from shelfmark.core import settings_registry
-        from shelfmark.core.config import config as app_config
-
-        ordered_fields = _get_ordered_user_overridable_fields("downloads")
-        if not ordered_fields:
+        try:
+            payload = _build_user_preferences_payload(user_db, user_id, "downloads")
+        except ValueError:
             return jsonify({"error": "Downloads settings tab not found"}), 500
 
-        download_config = load_config_file("downloads")
-        user_settings = user_db.get_user_settings(user_id)
-        ordered_keys = [key for key, _ in ordered_fields]
+        return jsonify(payload)
 
-        fields_payload: list[dict[str, Any]] = []
-        global_values: dict[str, Any] = {}
-        effective: dict[str, dict[str, Any]] = {}
+    @app.route("/api/admin/users/<int:user_id>/notification-preferences", methods=["GET"])
+    @require_admin
+    def admin_get_notification_preferences(user_id):
+        user = user_db.get_user(user_id=user_id)
+        if not user:
+            return jsonify({"error": "User not found"}), 404
 
-        for key, field in ordered_fields:
-            serialized = settings_registry.serialize_field(field, "downloads", include_value=False)
-            serialized["fromEnv"] = bool(field.env_supported and settings_registry.is_value_from_env(field))
-            fields_payload.append(serialized)
+        try:
+            payload = _build_user_preferences_payload(user_db, user_id, "notifications")
+        except ValueError:
+            return jsonify({"error": "Notifications settings tab not found"}), 500
 
-            global_values[key] = app_config.get(key, field.default)
+        return jsonify(payload)
 
-            source = "default"
-            value = app_config.get(key, field.default, user_id=user_id)
-            if field.env_supported and settings_registry.is_value_from_env(field):
-                source = "env_var"
-            elif key in user_settings and user_settings[key] is not None:
-                source = "user_override"
-                value = user_settings[key]
-            elif key in download_config:
-                source = "global_config"
+    @app.route("/api/admin/users/<int:user_id>/notification-preferences/test", methods=["POST"])
+    @require_admin
+    def admin_test_notification_preferences(user_id):
+        user = user_db.get_user(user_id=user_id)
+        if not user:
+            return jsonify({"error": "User not found"}), 404
 
-            effective[key] = {"value": value, "source": source}
-
-        user_overrides = {
-            key: user_settings[key]
-            for key in ordered_keys
-            if key in user_settings and user_settings[key] is not None
-        }
-
-        return jsonify({
-            "tab": "downloads",
-            "keys": ordered_keys,
-            "fields": fields_payload,
-            "globalValues": global_values,
-            "userOverrides": user_overrides,
-            "effective": effective,
-        })
+        payload = request.get_json(silent=True)
+        result, status_code = build_user_notification_test_response(
+            user_id=user_id,
+            payload=payload,
+        )
+        return jsonify(result), status_code
 
     @app.route("/api/admin/settings/overrides-summary", methods=["GET"])
     @require_admin

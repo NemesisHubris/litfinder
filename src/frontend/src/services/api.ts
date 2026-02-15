@@ -598,6 +598,7 @@ export interface AdminUser {
 export interface SelfUserEditContext {
   user: AdminUser;
   deliveryPreferences: DeliveryPreferencesResponse | null;
+  notificationPreferences: DeliveryPreferencesResponse | null;
   userOverridableKeys: string[];
 }
 
@@ -695,6 +696,37 @@ export const getAdminDeliveryPreferences = async (
   userId: number
 ): Promise<DeliveryPreferencesResponse> => {
   return fetchJSON<DeliveryPreferencesResponse>(`${API_BASE}/admin/users/${userId}/delivery-preferences`);
+};
+
+export const getAdminNotificationPreferences = async (
+  userId: number
+): Promise<DeliveryPreferencesResponse> => {
+  return fetchJSON<DeliveryPreferencesResponse>(`${API_BASE}/admin/users/${userId}/notification-preferences`);
+};
+
+export const testAdminUserNotificationPreferences = async (
+  userId: number,
+  routes: Array<Record<string, unknown>>
+): Promise<import('../types/settings').ActionResult> => {
+  return fetchJSON<import('../types/settings').ActionResult>(
+    `${API_BASE}/admin/users/${userId}/notification-preferences/test`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ USER_NOTIFICATION_ROUTES: routes }),
+    }
+  );
+};
+
+export const testSelfNotificationPreferences = async (
+  routes: Array<Record<string, unknown>>
+): Promise<import('../types/settings').ActionResult> => {
+  return fetchJSON<import('../types/settings').ActionResult>(
+    `${API_BASE}/users/me/notification-preferences/test`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ USER_NOTIFICATION_ROUTES: routes }),
+    }
+  );
 };
 
 export interface SettingsOverrideUserDetail {

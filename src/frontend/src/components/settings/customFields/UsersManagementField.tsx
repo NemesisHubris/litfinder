@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
-import { AdminUser } from '../../../services/api';
+import {
+  AdminUser,
+  testAdminUserNotificationPreferences,
+} from '../../../services/api';
 import { CustomSettingsFieldRendererProps } from './types';
 import {
   canCreateLocalUsersForAuthMode,
@@ -40,6 +43,7 @@ export const UsersManagementField = ({
     setEditPasswordConfirm,
     downloadDefaults,
     deliveryPreferences,
+    notificationPreferences,
     isUserOverridable,
     userSettings,
     setUserSettings,
@@ -72,6 +76,7 @@ export const UsersManagementField = ({
     userSettings,
     userOverridableSettings,
     deliveryPreferences,
+    notificationPreferences,
     onEditSaveSuccess: clearEditState,
   });
 
@@ -170,6 +175,13 @@ export const UsersManagementField = ({
     await handleSaveUserOverridesRef.current();
   }, []);
 
+  const handleTestNotificationRoutes = useCallback(async (routes: Array<Record<string, unknown>>) => {
+    if (!editingUser) {
+      return { success: false, message: 'No user selected for notification test.' };
+    }
+    return testAdminUserNotificationPreferences(editingUser.id, routes);
+  }, [editingUser]);
+
   useEffect(() => {
     if (route.kind !== 'edit-overrides') {
       onUiStateChange('hasChanges', false);
@@ -198,11 +210,13 @@ export const UsersManagementField = ({
         hasChanges={hasUserSettingsChanges}
         onBack={handleBackToEdit}
         deliveryPreferences={deliveryPreferences}
+        notificationPreferences={notificationPreferences}
         isUserOverridable={isUserOverridable}
         userSettings={userSettings}
         setUserSettings={(updater) => setUserSettings(updater)}
         usersTab={usersTab}
         globalUsersSettingsValues={values}
+        onTestNotificationRoutes={handleTestNotificationRoutes}
       />
     );
   }

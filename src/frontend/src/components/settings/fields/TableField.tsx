@@ -1,6 +1,7 @@
 import { useMemo, useEffect, CSSProperties } from 'react';
-import { TableFieldConfig, TableFieldColumn } from '../../../types/settings';
+import { MultiSelectFieldConfig, TableFieldConfig, TableFieldColumn } from '../../../types/settings';
 import { DropdownList } from '../../DropdownList';
+import { MultiSelectField } from './MultiSelectField';
 
 interface TableFieldProps {
   field: TableFieldConfig;
@@ -13,10 +14,26 @@ function defaultCellValue(column: TableFieldColumn): unknown {
   if (column.defaultValue !== undefined) {
     return column.defaultValue;
   }
+  if (column.type === 'multiselect') {
+    return [];
+  }
   if (column.type === 'checkbox') {
     return false;
   }
   return '';
+}
+
+function normalizeMultiValue(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => String(entry ?? '').trim())
+      .filter((entry) => entry.length > 0);
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim();
+    return normalized ? [normalized] : [];
+  }
+  return [];
 }
 
 function normalizeRows(rows: Record<string, unknown>[], columns: TableFieldColumn[]): Record<string, unknown>[] {
@@ -108,6 +125,19 @@ export const TableField = ({ field, value, onChange, disabled }: TableFieldProps
 
     rows.forEach((row, rowIndex) => {
       columns.forEach((col) => {
+        if (col.type === 'multiselect') {
+          const filteredOptions = getFilteredSelectOptions(col, row);
+          const validValues = new Set(filteredOptions.map((opt) => opt.value));
+          const currentValues = normalizeMultiValue(row[col.key]);
+          const normalizedValues = currentValues.filter((entry) => validValues.has(entry));
+
+          if (JSON.stringify(currentValues) !== JSON.stringify(normalizedValues)) {
+            nextRows[rowIndex][col.key] = normalizedValues;
+            hasChanges = true;
+          }
+          return;
+        }
+
         if (col.type !== 'select') return;
 
         const filteredOptions = getFilteredSelectOptions(col, row);
@@ -146,7 +176,7 @@ export const TableField = ({ field, value, onChange, disabled }: TableFieldProps
           disabled={isDisabled}
           className="px-3 py-2 rounded-lg text-sm font-medium
                      bg-[var(--bg-soft)] border border-[var(--border-muted)]
-                     hover:bg-[var(--hover-surface)] transition-colors
+                     hover-action transition-colors
                      disabled:opacity-60 disabled:cursor-not-allowed"
         >
           {field.addLabel || 'Add'}
@@ -223,6 +253,44 @@ export const TableField = ({ field, value, onChange, disabled }: TableFieldProps
                 );
               }
 
+              if (col.type === 'multiselect') {
+                const options = getFilteredSelectOptions(col, row).map((opt) => ({
+                  value: opt.value,
+                  label: opt.label,
+                  description: opt.description,
+                  childOf: opt.childOf,
+                }));
+                const selectedValues = normalizeMultiValue(cellValue).filter((entry) =>
+                  options.some((option) => option.value === entry)
+                );
+                const multiSelectField: MultiSelectFieldConfig = {
+                  type: 'MultiSelectField',
+                  key: `${field.key}_${rowIndex}_${col.key}`,
+                  label: col.label,
+                  value: selectedValues,
+                  options,
+                  variant: 'dropdown',
+                  placeholder: col.placeholder || 'Select...',
+                };
+
+                return (
+                  <div key={col.key} className="flex flex-col gap-1 min-w-0">
+                    {mobileLabel}
+                    <MultiSelectField
+                      field={multiSelectField}
+                      value={selectedValues}
+                      onChange={(nextValues) => {
+                        const normalizedValues = (nextValues ?? [])
+                          .map((entry) => String(entry ?? '').trim())
+                          .filter((entry) => entry.length > 0);
+                        updateCell(rowIndex, col.key, normalizedValues);
+                      }}
+                      disabled={isDisabled}
+                    />
+                  </div>
+                );
+              }
+
               // text/path
               return (
                 <div key={col.key} className="flex flex-col gap-1 min-w-0">
@@ -248,7 +316,7 @@ export const TableField = ({ field, value, onChange, disabled }: TableFieldProps
                 type="button"
                 onClick={() => removeRow(rowIndex)}
                 disabled={isDisabled}
-                className="p-1.5 rounded-full hover:bg-[var(--hover-surface)]
+                className="p-1.5 rounded-full hover-action
                            disabled:opacity-60 disabled:cursor-not-allowed"
                 aria-label="Remove row"
               >
@@ -276,7 +344,7 @@ export const TableField = ({ field, value, onChange, disabled }: TableFieldProps
         disabled={isDisabled}
         className="px-3 py-2 rounded-lg text-sm font-medium
                    bg-[var(--bg-soft)] border border-[var(--border-muted)]
-                   hover:bg-[var(--hover-surface)] transition-colors
+                   hover-action transition-colors
                    disabled:opacity-60 disabled:cursor-not-allowed"
       >
         {field.addLabel || 'Add'}

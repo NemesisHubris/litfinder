@@ -7,7 +7,10 @@ from flask import Flask, jsonify, request, session
 from werkzeug.security import generate_password_hash
 
 from shelfmark.config.env import CWA_DB_PATH
-from shelfmark.core.admin_settings_routes import validate_user_settings
+from shelfmark.core.admin_settings_routes import (
+    build_user_notification_test_response,
+    validate_user_settings,
+)
 from shelfmark.core.auth_modes import (
     AUTH_SOURCE_BUILTIN,
     AUTH_SOURCE_CWA,
@@ -19,6 +22,10 @@ from shelfmark.core.auth_modes import (
 )
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.settings_registry import load_config_file
+from shelfmark.core.user_settings_overrides import (
+    build_user_preferences_payload as _build_user_preferences_payload,
+    get_ordered_user_overridable_fields as _get_ordered_user_overridable_fields,
+)
 from shelfmark.core.user_db import UserDB
 
 logger = setup_logger(__name__)
@@ -101,78 +108,6 @@ def _serialize_self_user(user: Mapping[str, Any], auth_mode: str) -> dict[str, A
     return payload
 
 
-def _get_settings_registry():
-    # Ensure settings modules are loaded before reading registry metadata.
-    import shelfmark.config.settings  # noqa: F401
-    import shelfmark.config.security  # noqa: F401
-    import shelfmark.config.users_settings  # noqa: F401
-    from shelfmark.core import settings_registry
-
-    return settings_registry
-
-
-def _get_ordered_user_overridable_fields(tab_name: str) -> list[tuple[str, Any]]:
-    settings_registry = _get_settings_registry()
-    tab = settings_registry.get_settings_tab(tab_name)
-    if not tab:
-        return []
-    overridable_map = settings_registry.get_user_overridable_fields(tab_name=tab_name)
-    return [(field.key, field) for field in tab.fields if field.key in overridable_map]
-
-
-def _build_delivery_preferences_payload(user_db: UserDB, user_id: int) -> dict[str, Any]:
-    from shelfmark.core.config import config as app_config
-
-    settings_registry = _get_settings_registry()
-    ordered_fields = _get_ordered_user_overridable_fields("downloads")
-    if not ordered_fields:
-        raise ValueError("Downloads settings tab not found")
-
-    download_config = load_config_file("downloads")
-    user_settings = user_db.get_user_settings(user_id)
-    ordered_keys = [key for key, _ in ordered_fields]
-
-    fields_payload: list[dict[str, Any]] = []
-    global_values: dict[str, Any] = {}
-    effective: dict[str, dict[str, Any]] = {}
-
-    for key, field in ordered_fields:
-        serialized = settings_registry.serialize_field(field, "downloads", include_value=False)
-        serialized["fromEnv"] = bool(
-            field.env_supported and settings_registry.is_value_from_env(field)
-        )
-        fields_payload.append(serialized)
-
-        global_values[key] = app_config.get(key, field.default)
-
-        source = "default"
-        value = app_config.get(key, field.default, user_id=user_id)
-        if field.env_supported and settings_registry.is_value_from_env(field):
-            source = "env_var"
-        elif key in user_settings and user_settings[key] is not None:
-            source = "user_override"
-            value = user_settings[key]
-        elif key in download_config:
-            source = "global_config"
-
-        effective[key] = {"value": value, "source": source}
-
-    user_overrides = {
-        key: user_settings[key]
-        for key in ordered_keys
-        if key in user_settings and user_settings[key] is not None
-    }
-
-    return {
-        "tab": "downloads",
-        "keys": ordered_keys,
-        "fields": fields_payload,
-        "globalValues": global_values,
-        "userOverrides": user_overrides,
-        "effective": effective,
-    }
-
-
 def register_self_user_routes(app: Flask, user_db: UserDB) -> None:
     """Register self-service user endpoints."""
 
@@ -188,24 +123,50 @@ def register_self_user_routes(app: Flask, user_db: UserDB) -> None:
         serialized_user["settings"] = user_db.get_user_settings(user_id)
 
         try:
-            delivery_preferences = _build_delivery_preferences_payload(user_db, user_id)
+            delivery_preferences = _build_user_preferences_payload(user_db, user_id, "downloads")
         except ValueError:
             return jsonify({"error": "Downloads settings tab not found"}), 500
         except Exception as exc:
             logger.warning(f"Failed to build user delivery preferences for user_id={user_id}: {exc}")
             delivery_preferences = None
 
+        try:
+            notification_preferences = _build_user_preferences_payload(user_db, user_id, "notifications")
+        except ValueError:
+            return jsonify({"error": "Notifications settings tab not found"}), 500
+        except Exception as exc:
+            logger.warning(f"Failed to build user notification preferences for user_id={user_id}: {exc}")
+            notification_preferences = None
+
         user_overridable_keys = sorted(
             set(delivery_preferences.get("keys", []) if delivery_preferences else [])
+            | set(notification_preferences.get("keys", []) if notification_preferences else [])
         )
 
         return jsonify(
             {
                 "user": serialized_user,
                 "deliveryPreferences": delivery_preferences,
+                "notificationPreferences": notification_preferences,
                 "userOverridableKeys": user_overridable_keys,
             }
         )
+
+    @app.route("/api/users/me/notification-preferences/test", methods=["POST"])
+    @_require_authenticated_user
+    def users_me_test_notification_preferences():
+        user_id, _user, user_error = _get_current_user(user_db)
+        if user_error:
+            return user_error
+        if user_id is None:
+            return jsonify({"error": "User not found"}), 404
+
+        payload = request.get_json(silent=True)
+        result, status_code = build_user_notification_test_response(
+            user_id=user_id,
+            payload=payload,
+        )
+        return jsonify(result), status_code
 
     @app.route("/api/users/me", methods=["PUT"])
     @_require_authenticated_user
@@ -292,6 +253,8 @@ def register_self_user_routes(app: Flask, user_db: UserDB) -> None:
 
             allowed_user_settings_keys = {
                 key for key, _field in _get_ordered_user_overridable_fields("downloads")
+            } | {
+                key for key, _field in _get_ordered_user_overridable_fields("notifications")
             }
             disallowed_keys = sorted(
                 key for key in settings_payload if key not in allowed_user_settings_keys

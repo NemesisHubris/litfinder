@@ -947,6 +947,10 @@ function App() {
     [openRequestConfirmation, refreshRequestPolicy]
   );
 
+  const handleReleaseModalPolicyRefresh = useCallback(() => {
+    return refreshRequestPolicy({ force: true });
+  }, [refreshRequestPolicy]);
+
   const handleRequestCancel = useCallback(
     async (requestId: number) => {
       try {
@@ -978,12 +982,20 @@ function App() {
   );
 
   const handleRequestApprove = useCallback(
-    async (requestId: number, record: RequestRecord) => {
+    async (
+      requestId: number,
+      record: RequestRecord,
+      options?: {
+        browseOnly?: boolean;
+      }
+    ) => {
       if (!requestRoleIsAdmin) {
         return;
       }
 
-      if (record.request_level === 'release') {
+      const shouldBrowse = Boolean(options?.browseOnly) || record.request_level === 'book';
+
+      if (!shouldBrowse && record.request_level === 'release') {
         try {
           await fulfilSidebarRequest(requestId, record.release_data || undefined);
           await refreshActivitySnapshot();
@@ -1252,7 +1264,7 @@ function App() {
             onDownload={isBrowseFulfilMode ? handleBrowseFulfilDownload : handleReleaseDownload}
             onRequestRelease={isBrowseFulfilMode ? undefined : handleReleaseRequest}
             getPolicyModeForSource={isBrowseFulfilMode ? () => 'download' : (source, ct) => getSourceMode(source, ct)}
-            onPolicyRefresh={() => refreshRequestPolicy({ force: true })}
+            onPolicyRefresh={handleReleaseModalPolicyRefresh}
             supportedFormats={supportedFormats}
             supportedAudiobookFormats={config?.supported_audiobook_formats || []}
             contentType={activeReleaseContentType}

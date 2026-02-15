@@ -1,20 +1,21 @@
 import { DeliveryPreferencesResponse } from '../../../services/api';
 import { PerUserSettings } from './types';
 import { SettingsSubpage } from '../shared';
-import { UserOverridesSection } from './UserOverridesSection';
-import { SettingsTab } from '../../../types/settings';
-import { UserRequestPolicyOverridesSection } from './UserRequestPolicyOverridesSection';
+import { ActionResult, SettingsTab } from '../../../types/settings';
+import { UserOverridesSections } from './UserOverridesSections';
 
 interface UserOverridesViewProps {
   embedded?: boolean;
   hasChanges: boolean;
   onBack: () => void;
   deliveryPreferences: DeliveryPreferencesResponse | null;
+  notificationPreferences: DeliveryPreferencesResponse | null;
   isUserOverridable: (key: keyof PerUserSettings) => boolean;
   userSettings: PerUserSettings;
   setUserSettings: (updater: (prev: PerUserSettings) => PerUserSettings) => void;
   usersTab: SettingsTab;
   globalUsersSettingsValues: Record<string, unknown>;
+  onTestNotificationRoutes?: (routes: Array<Record<string, unknown>>) => Promise<ActionResult>;
 }
 
 export const UserOverridesView = ({
@@ -22,11 +23,13 @@ export const UserOverridesView = ({
   hasChanges,
   onBack,
   deliveryPreferences,
+  notificationPreferences,
   isUserOverridable,
   userSettings,
   setUserSettings,
   usersTab,
   globalUsersSettingsValues,
+  onTestNotificationRoutes,
 }: UserOverridesViewProps) => {
   const content = (
     <div className="space-y-5">
@@ -50,19 +53,16 @@ export const UserOverridesView = ({
         </button>
       </div>
 
-      <UserOverridesSection
+      <UserOverridesSections
+        scope="admin"
         deliveryPreferences={deliveryPreferences}
+        notificationPreferences={notificationPreferences}
         isUserOverridable={isUserOverridable}
         userSettings={userSettings}
         setUserSettings={setUserSettings}
-      />
-
-      <UserRequestPolicyOverridesSection
         usersTab={usersTab}
         globalUsersSettingsValues={globalUsersSettingsValues}
-        isUserOverridable={isUserOverridable}
-        userSettings={userSettings}
-        setUserSettings={setUserSettings}
+        onTestNotificationRoutes={onTestNotificationRoutes}
       />
     </div>
   );

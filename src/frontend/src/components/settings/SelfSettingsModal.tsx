@@ -3,14 +3,15 @@ import {
   AdminUser,
   DeliveryPreferencesResponse,
   getSelfUserEditContext,
+  testSelfNotificationPreferences,
   updateSelfUser,
 } from '../../services/api';
 import { SelectField } from './fields';
 import { FieldWrapper } from './shared';
 import { UserAccountCardContent, UserEditActions, UserIdentityHeader } from './users/UserCard';
-import { UserOverridesSection } from './users/UserOverridesSection';
-import { buildUserSettingsPayload } from './users/settingsPayload';
+import { UserOverridesSections } from './users/UserOverridesSections';
 import { PerUserSettings } from './users/types';
+import { useUserOverridesState } from './users/useUserOverridesState';
 import { getStoredThemePreference, setThemePreference, THEME_FIELD } from '../../utils/themePreference';
 
 interface SelfSettingsModalProps {
@@ -20,18 +21,6 @@ interface SelfSettingsModalProps {
 }
 
 const MIN_PASSWORD_LENGTH = 4;
-
-const normalizeUserSettings = (settings: PerUserSettings): PerUserSettings => {
-  const normalized: PerUserSettings = {};
-  Object.keys(settings).sort().forEach((key) => {
-    const typedKey = key as keyof PerUserSettings;
-    const value = settings[typedKey];
-    if (value !== null && value !== undefined) {
-      normalized[typedKey] = value;
-    }
-  });
-  return normalized;
-};
 
 const getPasswordError = (password: string, passwordConfirm: string): string | null => {
   if (!password && !passwordConfirm) {
@@ -62,28 +51,40 @@ export const SelfSettingsModal = ({ isOpen, onClose, onShowToast }: SelfSettings
   const [editingUser, setEditingUser] = useState<AdminUser | null>(null);
   const [originalUser, setOriginalUser] = useState<AdminUser | null>(null);
   const [deliveryPreferences, setDeliveryPreferences] = useState<DeliveryPreferencesResponse | null>(null);
+  const [notificationPreferences, setNotificationPreferences] = useState<DeliveryPreferencesResponse | null>(null);
 
   const [editPassword, setEditPassword] = useState('');
   const [editPasswordConfirm, setEditPasswordConfirm] = useState('');
 
-  const [userSettings, setUserSettings] = useState<PerUserSettings>({});
-  const [originalUserSettings, setOriginalUserSettings] = useState<PerUserSettings>({});
-  const [userOverridableSettings, setUserOverridableSettings] = useState<Set<string>>(new Set());
   const [themeValue, setThemeValue] = useState<string>(getStoredThemePreference());
+
+  const preferenceGroups = useMemo(
+    () => [deliveryPreferences, notificationPreferences],
+    [deliveryPreferences, notificationPreferences]
+  );
+  const {
+    userSettings,
+    setUserSettings,
+    isUserOverridable,
+    currentSettingsPayload,
+    hasUserSettingsChanges: hasSettingsChanges,
+    applyUserOverridesContext,
+  } = useUserOverridesState({ preferenceGroups });
 
   const loadEditContext = useCallback(async () => {
     setIsLoading(true);
     setLoadError(null);
     try {
       const context = await getSelfUserEditContext();
-      const normalizedSettings = normalizeUserSettings((context.user.settings || {}) as PerUserSettings);
 
       setEditingUser(context.user);
       setOriginalUser(context.user);
       setDeliveryPreferences(context.deliveryPreferences || null);
-      setUserSettings(normalizedSettings);
-      setOriginalUserSettings(normalizedSettings);
-      setUserOverridableSettings(new Set(context.userOverridableKeys || []));
+      setNotificationPreferences(context.notificationPreferences || null);
+      applyUserOverridesContext({
+        settings: (context.user.settings || {}) as PerUserSettings,
+        userOverridableKeys: context.userOverridableKeys || [],
+      });
       setEditPassword('');
       setEditPasswordConfirm('');
     } catch (error) {
@@ -91,7 +92,7 @@ export const SelfSettingsModal = ({ isOpen, onClose, onShowToast }: SelfSettings
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [applyUserOverridesContext]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -136,24 +137,6 @@ export const SelfSettingsModal = ({ isOpen, onClose, onShowToast }: SelfSettings
     return () => document.removeEventListener('keydown', handleEscape);
   }, [isOpen, handleClose]);
 
-  const isUserOverridable = useCallback(
-    (key: keyof PerUserSettings) => userOverridableSettings.has(String(key)),
-    [userOverridableSettings]
-  );
-
-  const currentSettingsPayload = useMemo(
-    () => buildUserSettingsPayload(userSettings, userOverridableSettings, deliveryPreferences),
-    [deliveryPreferences, userOverridableSettings, userSettings]
-  );
-
-  const originalSettingsPayload = useMemo(
-    () => buildUserSettingsPayload(originalUserSettings, userOverridableSettings, deliveryPreferences),
-    [deliveryPreferences, originalUserSettings, userOverridableSettings]
-  );
-
-  const hasSettingsChanges =
-    JSON.stringify(currentSettingsPayload) !== JSON.stringify(originalSettingsPayload);
-
   const hasProfileChanges = Boolean(
     editingUser
     && originalUser
@@ -166,6 +149,10 @@ export const SelfSettingsModal = ({ isOpen, onClose, onShowToast }: SelfSettings
   const hasPasswordChanges = editPassword.length > 0 || editPasswordConfirm.length > 0;
   const passwordError = getPasswordError(editPassword, editPasswordConfirm);
   const hasChanges = hasSettingsChanges || hasProfileChanges || hasPasswordChanges;
+
+  const handleTestNotificationRoutes = useCallback((routes: Array<Record<string, unknown>>) => {
+    return testSelfNotificationPreferences(routes);
+  }, []);
 
   const handleSave = useCallback(async () => {
     if (!editingUser || !originalUser) {
@@ -320,14 +307,15 @@ export const SelfSettingsModal = ({ isOpen, onClose, onShowToast }: SelfSettings
                 preferencesPanel={{
                   hideTitle: true,
                   children: (
-                    <div className="space-y-5">
-                      <UserOverridesSection
-                        deliveryPreferences={deliveryPreferences}
-                        isUserOverridable={isUserOverridable}
-                        userSettings={userSettings}
-                        setUserSettings={(updater) => setUserSettings(updater)}
-                      />
-                    </div>
+                    <UserOverridesSections
+                      scope="self"
+                      deliveryPreferences={deliveryPreferences}
+                      notificationPreferences={notificationPreferences}
+                      isUserOverridable={isUserOverridable}
+                      userSettings={userSettings}
+                      setUserSettings={setUserSettings}
+                      onTestNotificationRoutes={handleTestNotificationRoutes}
+                    />
                   ),
                 }}
               />

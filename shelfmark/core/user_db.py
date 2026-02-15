@@ -169,7 +169,6 @@ class UserDB:
                 conn.execute("PRAGMA journal_mode=WAL")
             finally:
                 conn.close()
-        logger.info(f"User database initialized at {self._db_path}")
 
     def _migrate_auth_source_column(self, conn: sqlite3.Connection) -> None:
         """Ensure users.auth_source exists and backfill historical rows."""
@@ -617,12 +616,21 @@ class UserDB:
         "delivery_updated_at",
     }
 
-    def update_request(self, request_id: int, **kwargs) -> Dict[str, Any]:
+    def update_request(
+        self,
+        request_id: int,
+        expected_current_status: Optional[str] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
         """Update request fields and return the updated record."""
         if not kwargs:
             request = self.get_request(request_id)
             if request is None:
                 raise ValueError(f"Request {request_id} not found")
+            if expected_current_status is not None:
+                normalized_expected_status = normalize_request_status(expected_current_status)
+                if request["status"] != normalized_expected_status:
+                    raise ValueError("Request state changed before update")
             return request
 
         for key in kwargs:
@@ -639,6 +647,11 @@ class UserDB:
                 current = self._parse_request_row(row)
                 if current is None:
                     raise ValueError(f"Request {request_id} not found")
+
+                if expected_current_status is not None:
+                    normalized_expected_status = normalize_request_status(expected_current_status)
+                    if current["status"] != normalized_expected_status:
+                        raise ValueError("Request state changed before update")
 
                 updates = dict(kwargs)
 

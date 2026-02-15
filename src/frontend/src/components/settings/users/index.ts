@@ -9,10 +9,13 @@ export {
 } from './UserCard';
 export { UserListView } from './UserListView';
 export { RequestPolicyGrid } from './RequestPolicyGrid';
+export { UserNotificationOverridesSection } from './UserNotificationOverridesSection';
 export { UserOverridesSection } from './UserOverridesSection';
+export { UserOverridesSections } from './UserOverridesSections';
 export { UserOverridesView } from './UserOverridesView';
 export { useUserForm } from './useUserForm';
 export { useUserMutations } from './useUserMutations';
+export { useUserOverridesState } from './useUserOverridesState';
 export { useUsersFetch } from './useUsersFetch';
 export { useUsersPanelState } from './useUsersPanelState';
 export { canCreateLocalUsersForAuthMode, getUsersHeadingDescriptionForAuthMode } from './types';

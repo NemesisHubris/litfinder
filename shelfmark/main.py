@@ -49,6 +49,7 @@ from shelfmark.core.requests_service import (
     sync_delivery_states_from_queue_status,
 )
 from shelfmark.core.activity_service import ActivityService, build_download_item_key
+from shelfmark.core.notifications import NotificationContext, NotificationEvent, notify_admin, notify_user
 from shelfmark.core.utils import normalize_base_path
 from shelfmark.api.websocket import ws_manager
 
@@ -1012,7 +1013,73 @@ def _queue_status_to_final_activity_status(status: QueueStatus) -> str | None:
     return None
 
 
+def _normalize_optional_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _queue_status_to_notification_event(status: QueueStatus) -> NotificationEvent | None:
+    if status in {QueueStatus.COMPLETE, QueueStatus.AVAILABLE, QueueStatus.DONE}:
+        return NotificationEvent.DOWNLOAD_COMPLETE
+    if status == QueueStatus.ERROR:
+        return NotificationEvent.DOWNLOAD_FAILED
+    return None
+
+
+def _notify_admin_for_terminal_download_status(*, task_id: str, status: QueueStatus, task: Any) -> None:
+    event = _queue_status_to_notification_event(status)
+    if event is None:
+        return
+
+    raw_owner_user_id = getattr(task, "user_id", None)
+    try:
+        owner_user_id = int(raw_owner_user_id) if raw_owner_user_id is not None else None
+    except (TypeError, ValueError):
+        owner_user_id = None
+
+    content_type = _normalize_optional_text(getattr(task, "content_type", None))
+    context = NotificationContext(
+        event=event,
+        title=str(getattr(task, "title", "Unknown title") or "Unknown title"),
+        author=str(getattr(task, "author", "Unknown author") or "Unknown author"),
+        username=_normalize_optional_text(getattr(task, "username", None)),
+        content_type=normalize_content_type(content_type) if content_type is not None else None,
+        format=_normalize_optional_text(getattr(task, "format", None)),
+        source=normalize_source(getattr(task, "source", None)),
+        error_message=(
+            _normalize_optional_text(getattr(task, "status_message", None))
+            if event == NotificationEvent.DOWNLOAD_FAILED
+            else None
+        ),
+    )
+    try:
+        notify_admin(event, context)
+    except Exception as exc:
+        logger.warning(
+            "Failed to trigger admin notification for download %s (%s): %s",
+            task_id,
+            status.value,
+            exc,
+        )
+    if owner_user_id is None:
+        return
+    try:
+        notify_user(owner_user_id, event, context)
+    except Exception as exc:
+        logger.warning(
+            "Failed to trigger user notification for download %s (%s, user_id=%s): %s",
+            task_id,
+            status.value,
+            owner_user_id,
+            exc,
+        )
+
+
 def _record_download_terminal_snapshot(task_id: str, status: QueueStatus, task: Any) -> None:
+    _notify_admin_for_terminal_download_status(task_id=task_id, status=status, task=task)
+
     if activity_service is None:
         return
 
@@ -1106,8 +1173,7 @@ def _is_graduated_request_download(task_id: str, *, user_id: int) -> bool:
     return False
 
 
-if activity_service is not None:
-    backend.book_queue.set_terminal_status_hook(_record_download_terminal_snapshot)
+backend.book_queue.set_terminal_status_hook(_record_download_terminal_snapshot)
 
 
 def _emit_request_update_events(updated_requests: list[dict[str, Any]]) -> None:
@@ -2124,6 +2190,7 @@ def api_settings_get_all() -> Union[Response, Tuple[Response, int]]:
         # This triggers the @register_settings decorators
         import shelfmark.config.settings  # noqa: F401
         import shelfmark.config.security  # noqa: F401
+        import shelfmark.config.notifications_settings  # noqa: F401
 
         data = serialize_all_settings(include_values=True)
         return jsonify(data)
@@ -2153,6 +2220,7 @@ def api_settings_get_tab(tab_name: str) -> Union[Response, Tuple[Response, int]]
         # Ensure settings are registered
         import shelfmark.config.settings  # noqa: F401
         import shelfmark.config.security  # noqa: F401
+        import shelfmark.config.notifications_settings  # noqa: F401
 
         tab = get_settings_tab(tab_name)
         if not tab:
@@ -2188,6 +2256,7 @@ def api_settings_update_tab(tab_name: str) -> Union[Response, Tuple[Response, in
         # Ensure settings are registered
         import shelfmark.config.settings  # noqa: F401
         import shelfmark.config.security  # noqa: F401
+        import shelfmark.config.notifications_settings  # noqa: F401
 
         tab = get_settings_tab(tab_name)
         if not tab:
@@ -2234,6 +2303,7 @@ def api_settings_execute_action(tab_name: str, action_key: str) -> Union[Respons
         # Ensure settings are registered
         import shelfmark.config.settings  # noqa: F401
         import shelfmark.config.security  # noqa: F401
+        import shelfmark.config.notifications_settings  # noqa: F401
 
         # Get current form values if provided (for testing with unsaved values)
         current_values = request.get_json(silent=True) or {}
