@@ -150,9 +150,12 @@ function App() {
     username,
     displayName,
     oidcButtonLabel,
+    hideLocalAuth,
+    oidcAutoRedirect,
     loginError,
     isLoggingIn,
     setIsAuthenticated,
+    refreshAuth,
     handleLogin,
     handleLogout,
   } = useAuth({
@@ -1409,6 +1412,7 @@ function App() {
         onClose={() => setSettingsOpen(false)}
         onShowToast={showToast}
         onSettingsSaved={handleSettingsSaved}
+        onRefreshAuth={refreshAuth}
       />
 
       <SelfSettingsModal
@@ -1497,6 +1501,8 @@ function App() {
               isLoading={isLoggingIn}
               authMode={authMode}
               oidcButtonLabel={oidcButtonLabel}
+              hideLocalAuth={hideLocalAuth}
+              oidcAutoRedirect={oidcAutoRedirect}
             />
           )
         }

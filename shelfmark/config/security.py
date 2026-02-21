@@ -18,6 +18,7 @@ from shelfmark.core.settings_registry import (
     CheckboxField,
     ActionButton,
     TagListField,
+    CustomComponentField,
 )
 from shelfmark.core.user_db import sync_builtin_admin_user
 
@@ -59,9 +60,10 @@ def _on_save_security(values: Dict[str, Any]) -> Dict[str, Any]:
     return on_save_security(values)
 
 
-def _test_oidc_connection() -> Dict[str, Any]:
+def _test_oidc_connection(current_values: Dict[str, Any] = None) -> Dict[str, Any]:
     return test_oidc_connection(
         load_security_config=lambda: load_config_file("security"),
+        current_values=current_values or {},
         logger=logger,
     )
 
@@ -95,12 +97,18 @@ def security_settings():
             default="none",
             env_supported=False,
         ),
+        CustomComponentField(
+            key="oidc_admin_requirement",
+            component="oidc_admin_hint",
+            label="A local admin account is required before OIDC can be enabled.",
+            show_when=_auth_condition("oidc"),
+        ),
         ActionButton(
             key="open_users_tab",
             label="Go to Users",
             description="Configure local users and admin access in the Users tab.",
             style="primary",
-            show_when=_auth_condition("builtin"),
+            show_when={"field": "AUTH_METHOD", "value": ["builtin", "oidc"]},
         ),
         _auth_ui_field(
             TextField,
@@ -139,6 +147,16 @@ def security_settings():
             default="",
         ),
     ]
+
+    fields.append(
+        CustomComponentField(
+            key="oidc_callback_url",
+            component="settings_label",
+            label="Callback URL",
+            description="{origin}/api/auth/oidc/callback",
+            show_when=_auth_condition("oidc"),
+        )
+    )
 
     oidc_specs = [
         (
@@ -236,6 +254,16 @@ def security_settings():
             description="Fetch the OIDC discovery document and validate configuration.",
             style="primary",
             callback=_test_oidc_connection,
+            show_when=_auth_condition("oidc"),
+        )
+    )
+    fields.append(
+        CustomComponentField(
+            key="oidc_env_info",
+            component="oidc_env_info",
+            label="Environment-Only Options",
+            description="These options can only be set via environment variables because changing them through the UI could lock you out of the application.",
+            wrap_in_field_wrapper=True,
             show_when=_auth_condition("oidc"),
         )
     )
