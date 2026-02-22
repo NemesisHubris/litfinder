@@ -19,6 +19,7 @@ from shelfmark.core.oidc_auth import (
 )
 from shelfmark.core.settings_registry import load_config_file
 from shelfmark.core.user_db import UserDB
+from shelfmark.download.network import get_ssl_verify
 
 logger = setup_logger(__name__)
 oauth = OAuth()
@@ -36,16 +37,6 @@ def _normalize_claims(raw_claims: Any) -> dict[str, Any]:
         return dict(raw_claims)
     except Exception:
         return {}
-
-
-def _is_email_verified(claims: dict[str, Any]) -> bool:
-    """Normalize provider-specific email_verified values into a strict boolean."""
-    value = claims.get("email_verified", False)
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() == "true"
-    return False
 
 
 def _has_username_or_email(claims: dict[str, Any]) -> bool:
@@ -90,6 +81,11 @@ def _get_oidc_client() -> tuple[Any, dict[str, Any]]:
     if admin_group and use_admin_group and group_claim and group_claim not in scopes:
         scopes.append(group_claim)
 
+    def _ssl_compliance_fix(session, **kwargs):
+        """Set session.verify based on the Certificate Validation setting."""
+        session.verify = get_ssl_verify(discovery_url)
+        return session
+
     oauth._clients.pop("shelfmark_idp", None)
     oauth.register(
         name="shelfmark_idp",
@@ -100,6 +96,7 @@ def _get_oidc_client() -> tuple[Any, dict[str, Any]]:
             "scope": " ".join(scopes),
             "code_challenge_method": "S256",
         },
+        compliance_fix=_ssl_compliance_fix,
         overwrite=True,
     )
 
@@ -196,7 +193,7 @@ def register_oidc_routes(app: Flask, user_db: UserDB) -> None:
             if admin_group and use_admin_group:
                 is_admin = admin_group in groups
 
-            allow_email_link = bool(user_info.get("email")) and _is_email_verified(claims)
+            allow_email_link = bool(user_info.get("email"))
             user = provision_oidc_user(
                 user_db,
                 user_info,

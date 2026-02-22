@@ -22,6 +22,7 @@ from shelfmark.release_sources import (
     ColumnColorHint,
     LeadingCellConfig,
     LeadingCellType,
+    SortOption,
 )
 from shelfmark.release_sources.prowlarr.api import ProwlarrClient
 from shelfmark.core.utils import normalize_http_url
@@ -466,6 +467,9 @@ class ProwlarrSource(ReleaseSource):
                     sortable=True,
                     sort_key="size_bytes",
                 ),
+            ],
+            extra_sort_options=[
+                SortOption(label="Peers", sort_key="seeders"),
             ],
             grid_template="minmax(0,2fr) minmax(140px,1fr) 50px 50px 90px 80px",
             leading_cell=LeadingCellConfig(type=LeadingCellType.NONE),  # No leading cell for Prowlarr

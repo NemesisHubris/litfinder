@@ -164,7 +164,7 @@ def search_books(query: str, filters: SearchFilters) -> List[BookInfo]:
 
     filters_query = ""
 
-    for value in filters.lang or config.BOOK_LANGUAGE:
+    for value in filters.lang if filters.lang is not None else config.BOOK_LANGUAGE:
         if value != "all":
             filters_query += f"&lang={quote(value)}"
 
@@ -704,6 +704,7 @@ def _extract_libgen_download_url(link: str, cancel_flag: Optional[Event] = None)
             timeout=(5, 10),
             allow_redirects=True,
             proxies=network.get_proxies(link),
+            verify=network.get_ssl_verify(link),
         )
 
         if response.status_code != 200:
@@ -1172,8 +1173,7 @@ class DirectDownloadSource(ReleaseSource):
             if isbn:
                 logger.debug(f"Searching direct_download: isbn='{isbn}', langs={lang_filter}")
                 filters = SearchFilters(isbn=[isbn])
-                if lang_filter:
-                    filters.lang = lang_filter
+                filters.lang = lang_filter if lang_filter is not None else []
                 try:
                     results = search_books(isbn, filters)
                     if results:
@@ -1200,7 +1200,7 @@ class DirectDownloadSource(ReleaseSource):
                 continue
 
             logger.debug(f"Searching direct_download: title_author='{query}', langs={langs}")
-            filters = SearchFilters(lang=langs) if langs else SearchFilters()
+            filters = SearchFilters(lang=langs if langs is not None else [])
             try:
                 for bi in search_books(query, filters):
                     if bi.id not in seen_ids:

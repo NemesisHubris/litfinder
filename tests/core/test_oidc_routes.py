@@ -253,13 +253,14 @@ class TestOIDCCallbackEndpoint:
         assert "issuer validation failed" in error
 
     @patch("shelfmark.core.oidc_routes._get_oidc_client")
-    def test_callback_redirects_when_auto_provision_disabled(self, mock_get_client, client):
+    def test_callback_redirects_when_auto_provision_disabled_and_no_email_match(
+        self, mock_get_client, client
+    ):
         config = {**MOCK_OIDC_CONFIG, "OIDC_AUTO_PROVISION": False}
         fake_client = Mock()
         fake_client.authorize_access_token.return_value = {
             "userinfo": {
                 "sub": "unknown-user",
-                "email": "unknown@example.com",
                 "preferred_username": "unknown",
                 "groups": [],
             }
@@ -272,7 +273,7 @@ class TestOIDCCallbackEndpoint:
         assert "Account not found" in error
 
     @patch("shelfmark.core.oidc_routes._get_oidc_client")
-    def test_callback_allows_pre_created_user_by_verified_email_when_no_provision(
+    def test_callback_links_pre_created_user_by_email_when_no_provision(
         self, mock_get_client, client, user_db
     ):
         config = {**MOCK_OIDC_CONFIG, "OIDC_AUTO_PROVISION": False}
@@ -283,7 +284,6 @@ class TestOIDCCallbackEndpoint:
             "userinfo": {
                 "sub": "oidc-alice-sub",
                 "email": "alice@example.com",
-                "email_verified": True,
                 "preferred_username": "alice_oidc",
                 "groups": [],
             }
@@ -298,18 +298,16 @@ class TestOIDCCallbackEndpoint:
             assert sess.get("db_user_id") is not None
 
     @patch("shelfmark.core.oidc_routes._get_oidc_client")
-    def test_callback_does_not_link_unverified_email_when_no_provision(
+    def test_callback_does_not_link_when_no_email_and_no_provision(
         self, mock_get_client, client, user_db
     ):
         config = {**MOCK_OIDC_CONFIG, "OIDC_AUTO_PROVISION": False}
-        user = user_db.create_user(username="bob", email="bob@example.com", password_hash="hash")
+        user_db.create_user(username="bob", email="bob@example.com", password_hash="hash")
 
         fake_client = Mock()
         fake_client.authorize_access_token.return_value = {
             "userinfo": {
                 "sub": "oidc-bob-sub",
-                "email": "bob@example.com",
-                "email_verified": False,
                 "preferred_username": "bob_oidc",
                 "groups": [],
             }
@@ -321,7 +319,7 @@ class TestOIDCCallbackEndpoint:
         assert error is not None
         assert "Account not found" in error
 
-        updated_user = user_db.get_user(user_id=user["id"])
+        updated_user = user_db.get_user(username="bob")
         assert updated_user["oidc_subject"] is None
 
     @patch("shelfmark.core.oidc_routes._get_oidc_client")
@@ -359,3 +357,84 @@ class TestOIDCCallbackEndpoint:
         error = _get_oidc_error(resp)
         assert error is not None
         assert "Authentication failed" in error
+
+    @patch("shelfmark.core.oidc_routes._get_oidc_client")
+    def test_callback_links_to_existing_user_by_email(
+        self, mock_get_client, client, user_db
+    ):
+        """OIDC login with matching email should link to existing local user."""
+        user_db.create_user(username="localuser", email="shared@example.com", password_hash="hash")
+
+        fake_client = Mock()
+        fake_client.authorize_access_token.return_value = {
+            "userinfo": {
+                "sub": "oidc-new-sub",
+                "email": "shared@example.com",
+                "preferred_username": "oidcuser",
+                "groups": [],
+            }
+        }
+        mock_get_client.return_value = (fake_client, MOCK_OIDC_CONFIG)
+
+        resp = client.get("/api/auth/oidc/callback?code=abc123&state=test-state")
+        assert resp.status_code == 302
+
+        with client.session_transaction() as sess:
+            assert sess["user_id"] == "localuser"
+
+        linked = user_db.get_user(username="localuser")
+        assert linked["oidc_subject"] == "oidc-new-sub"
+        assert linked["auth_source"] == "oidc"
+
+    @patch("shelfmark.core.oidc_routes._get_oidc_client")
+    def test_callback_creates_new_user_when_no_email_match(
+        self, mock_get_client, client, user_db
+    ):
+        """OIDC login without matching email creates a new user."""
+        user_db.create_user(username="existing", email="other@example.com", password_hash="hash")
+
+        fake_client = Mock()
+        fake_client.authorize_access_token.return_value = {
+            "userinfo": {
+                "sub": "oidc-nomatch",
+                "email": "different@example.com",
+                "preferred_username": "newuser",
+                "groups": [],
+            }
+        }
+        mock_get_client.return_value = (fake_client, MOCK_OIDC_CONFIG)
+
+        resp = client.get("/api/auth/oidc/callback?code=abc123&state=test-state")
+        assert resp.status_code == 302
+
+        with client.session_transaction() as sess:
+            assert sess["user_id"] == "newuser"
+
+        original = user_db.get_user(username="existing")
+        assert original["oidc_subject"] is None
+
+    @patch("shelfmark.core.oidc_routes._get_oidc_client")
+    def test_callback_no_email_link_when_oidc_has_no_email(
+        self, mock_get_client, client, user_db
+    ):
+        """OIDC login without email in claims should not attempt email linking."""
+        user_db.create_user(username="existing", email="existing@example.com", password_hash="hash")
+
+        fake_client = Mock()
+        fake_client.authorize_access_token.return_value = {
+            "userinfo": {
+                "sub": "oidc-noemail",
+                "preferred_username": "noemailuser",
+                "groups": [],
+            }
+        }
+        mock_get_client.return_value = (fake_client, MOCK_OIDC_CONFIG)
+
+        resp = client.get("/api/auth/oidc/callback?code=abc123&state=test-state")
+        assert resp.status_code == 302
+
+        with client.session_transaction() as sess:
+            assert sess["user_id"] == "noemailuser"
+
+        original = user_db.get_user(username="existing")
+        assert original["oidc_subject"] is None

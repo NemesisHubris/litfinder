@@ -24,7 +24,13 @@ import { ReleaseCell } from './ReleaseCell';
 import { getColorStyleFromHint } from '../utils/colorMaps';
 import { getNestedValue } from '../utils/objectHelpers';
 import { LanguageMultiSelect } from './LanguageMultiSelect';
-import { LANGUAGE_OPTION_ALL, LANGUAGE_OPTION_DEFAULT, getLanguageFilterValues, releaseLanguageMatchesFilter, buildLanguageNormalizer } from '../utils/languageFilters';
+import {
+  LANGUAGE_OPTION_DEFAULT,
+  getLanguageFilterValues,
+  getReleaseSearchLanguageParams,
+  releaseLanguageMatchesFilter,
+  buildLanguageNormalizer,
+} from '../utils/languageFilters';
 
 // Module-level cache for release search results
 // Key format: `${provider}:${provider_id}:${source}:${contentType}`
@@ -1125,10 +1131,7 @@ export const ReleaseModal = ({
 
     try {
       // Resolve language codes for the API call (same logic as Apply button)
-      const langCodes = getLanguageFilterValues(languageFilter, bookLanguages, defaultLanguages);
-      const languagesParam = (langCodes === null || langCodes?.includes(LANGUAGE_OPTION_ALL))
-        ? undefined
-        : langCodes;
+      const languagesParam = getReleaseSearchLanguageParams(languageFilter, bookLanguages, defaultLanguages);
 
       // Pass indexer filter only if the source supports it (empty array = search all)
       const supportsIndexerFilter = releasesBySource[activeTab]?.column_config?.supported_filters?.includes('indexer');
@@ -1289,6 +1292,21 @@ export const ReleaseModal = ({
     return columnConfig.columns.filter(col => col.sortable) || [];
   }, [columnConfig]);
 
+  // Build unified list of all sort options (from sortable columns + extra_sort_options)
+  const allSortOptions = useMemo(() => {
+    const fromColumns = sortableColumns.map(col => ({
+      label: col.label,
+      sortKey: col.sort_key || col.key,
+      defaultDirection: inferDefaultDirection(col.render_type) as 'asc' | 'desc',
+    }));
+    const fromExtra = (columnConfig.extra_sort_options || []).map(opt => ({
+      label: opt.label,
+      sortKey: opt.sort_key,
+      defaultDirection: 'desc' as const,  // Extra sort options are typically numeric (e.g., peers)
+    }));
+    return [...fromColumns, ...fromExtra];
+  }, [sortableColumns, columnConfig.extra_sort_options]);
+
   // Get current sort state for active tab (from state, localStorage, or default to null = best match)
   const currentSort = useMemo((): SortState | null => {
     // Check state first - explicit null means "Default" was selected
@@ -1299,17 +1317,17 @@ export const ReleaseModal = ({
     const saved = getSavedSort(activeTab);
     if (saved) {
       // Verify the saved sort is still valid for this source
-      const isValid = sortableColumns.some(col => (col.sort_key || col.key) === saved.key);
+      const isValid = allSortOptions.some(opt => opt.sortKey === saved.key);
       if (isValid) {
         return saved;
       }
     }
     // Default to null (best-match sorting)
     return null;
-  }, [activeTab, sortBySource, sortableColumns]);
+  }, [activeTab, sortBySource, allSortOptions]);
 
   // Handle sort change - null means "Default" (best title match), otherwise toggle direction or set new column
-  const handleSortChange = useCallback((sortKey: string | null, column: ColumnSchema | null) => {
+  const handleSortChange = useCallback((sortKey: string | null, defaultDirection: 'asc' | 'desc') => {
     if (sortKey === null) {
       // "Default" selected - use best-match sorting
       setSortBySource(prev => {
@@ -1330,16 +1348,16 @@ export const ReleaseModal = ({
     let newState: SortState;
 
     if (currentState && currentState.key === sortKey) {
-      // Same column - toggle direction
+      // Same key - toggle direction
       newState = {
         key: sortKey,
         direction: currentState.direction === 'asc' ? 'desc' : 'asc',
       };
     } else {
-      // New column - use default direction for this column type
+      // New key - use provided default direction
       newState = {
         key: sortKey,
-        direction: inferDefaultDirection(column!.render_type),
+        direction: defaultDirection,
       };
     }
 
@@ -1385,7 +1403,7 @@ export const ReleaseModal = ({
     });
 
     // Then, sort by explicit column, or default to book-title relevance with exact author boost
-    if (currentSort && sortableColumns.length > 0) {
+    if (currentSort && allSortOptions.length > 0) {
       filtered = sortReleases(filtered, currentSort.key, currentSort.direction);
     } else {
       const responseBook = releasesBySource[activeTab]?.book;
@@ -1395,7 +1413,7 @@ export const ReleaseModal = ({
     }
 
     return filtered;
-  }, [releasesBySource, activeTab, formatFilter, resolvedLanguageCodes, effectiveFormats, defaultLanguages, languageNormalizer, indexerFilter, currentSort, sortableColumns, columnConfig, book]);
+  }, [releasesBySource, activeTab, formatFilter, resolvedLanguageCodes, effectiveFormats, defaultLanguages, languageNormalizer, indexerFilter, currentSort, allSortOptions, columnConfig, book]);
 
   // Pre-compute display field lookups to avoid repeated .find() calls in JSX
   const displayFields = useMemo(() => {
@@ -1771,8 +1789,8 @@ export const ReleaseModal = ({
                       </svg>
                     </button>
 
-                    {/* Sort dropdown - only show if source has sortable columns */}
-                    {sortableColumns.length > 0 && (
+                    {/* Sort dropdown - only show if source has sort options */}
+                    {allSortOptions.length > 0 && (
                       <Dropdown
                         align="right"
                         widthClassName="w-auto flex-shrink-0"
@@ -1800,7 +1818,7 @@ export const ReleaseModal = ({
                             <button
                               type="button"
                               onClick={() => {
-                                handleSortChange(null, null);
+                                handleSortChange(null, 'asc');
                                 close();
                               }}
                               className={`w-full px-3 py-2 text-left text-sm flex items-center justify-between hover-surface rounded ${!currentSort
@@ -1815,16 +1833,15 @@ export const ReleaseModal = ({
                                 </svg>
                               )}
                             </button>
-                            {sortableColumns.map((col) => {
-                              const sortKey = col.sort_key || col.key;
-                              const isSelected = currentSort?.key === sortKey;
+                            {allSortOptions.map((opt) => {
+                              const isSelected = currentSort?.key === opt.sortKey;
                               const direction = isSelected ? currentSort?.direction : null;
                               return (
                                 <button
-                                  key={sortKey}
+                                  key={opt.sortKey}
                                   type="button"
                                   onClick={() => {
-                                    handleSortChange(sortKey, col);
+                                    handleSortChange(opt.sortKey, opt.defaultDirection);
                                     // Don't close - allow toggling direction
                                     if (!isSelected) close();
                                   }}
@@ -1833,7 +1850,7 @@ export const ReleaseModal = ({
                                       : 'text-gray-700 dark:text-gray-300'
                                     }`}
                                 >
-                                  <span>{col.label}</span>
+                                  <span>{opt.label}</span>
                                   {isSelected && direction && (
                                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                                       {direction === 'asc' ? (
@@ -1955,11 +1972,7 @@ export const ReleaseModal = ({
                                   setLoadingBySource((prev) => ({ ...prev, [activeTab]: true }));
                                   try {
                                     // Resolve language codes for the API call
-                                    const langCodes = getLanguageFilterValues(languageFilter, bookLanguages, defaultLanguages);
-                                    // Don't pass languages if "All" is selected or null
-                                    const languagesParam = (langCodes === null || langCodes?.includes(LANGUAGE_OPTION_ALL))
-                                      ? undefined
-                                      : langCodes;
+                                    const languagesParam = getReleaseSearchLanguageParams(languageFilter, bookLanguages, defaultLanguages);
 
                                     // Pass indexer filter only if the source supports it (empty array = search all)
                                     const supportsIndexerFilter = columnConfig.supported_filters?.includes('indexer');

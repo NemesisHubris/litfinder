@@ -114,6 +114,13 @@ class LeadingCellConfig:
 
 
 @dataclass
+class SortOption:
+    """A sort option that appears in the sort dropdown without being tied to a column."""
+    label: str                                    # Display label in the sort dropdown
+    sort_key: str                                 # Field to sort by on the Release object
+
+
+@dataclass
 class SourceActionButton:
     """Action button configuration for a release source."""
     label: str                    # Button text (e.g., "Refresh search")
@@ -131,6 +138,7 @@ class ReleaseColumnConfig:
     default_indexers: Optional[List[str]] = None         # For Prowlarr: indexers selected in settings (pre-selected in filter)
     cache_ttl_seconds: Optional[int] = None              # How long to cache results (default: 5 min)
     supported_filters: Optional[List[str]] = None        # Which filters this source supports: ["format", "language", "indexer"]
+    extra_sort_options: Optional[List[SortOption]] = None # Additional sort options not tied to a column
     action_button: Optional[SourceActionButton] = None   # Custom action button (replaces default expand search)
 
 
@@ -190,6 +198,13 @@ def serialize_column_config(config: ReleaseColumnConfig) -> Dict[str, Any]:
     # Include supported filters (sources declare which filters they support)
     if config.supported_filters is not None:
         result["supported_filters"] = config.supported_filters
+
+    # Include extra sort options (sort entries not tied to a column)
+    if config.extra_sort_options:
+        result["extra_sort_options"] = [
+            {"label": opt.label, "sort_key": opt.sort_key}
+            for opt in config.extra_sort_options
+        ]
 
     # Include action button if specified (replaces default expand search)
     if config.action_button is not None:
