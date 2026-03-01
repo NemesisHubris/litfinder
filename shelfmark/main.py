@@ -388,6 +388,36 @@ def _policy_block_response(mode: PolicyMode):
     )
 
 
+def _resolve_download_user_context(
+    db_user_id: Any,
+    username: Any,
+    on_behalf_of_user_id: Any,
+) -> tuple[Any, Any, tuple[Response, int] | None]:
+    """Resolve download queue user context, including optional admin on-behalf overrides."""
+    if on_behalf_of_user_id in (None, ""):
+        return db_user_id, username, None
+
+    if not session.get("is_admin", False):
+        return db_user_id, username, (jsonify({"error": "Admin required"}), 403)
+
+    if user_db is None:
+        return db_user_id, username, (jsonify({"error": "User database unavailable"}), 503)
+
+    try:
+        target_user_id = int(on_behalf_of_user_id)
+    except (TypeError, ValueError):
+        return db_user_id, username, (jsonify({"error": "Invalid on_behalf_of_user_id"}), 400)
+
+    if target_user_id <= 0:
+        return db_user_id, username, (jsonify({"error": "Invalid on_behalf_of_user_id"}), 400)
+
+    target_user = user_db.get_user(user_id=target_user_id)
+    if not target_user:
+        return db_user_id, username, (jsonify({"error": "User not found"}), 404)
+
+    return target_user["id"], target_user["username"], None
+
+
 if user_db is not None:
     try:
         from shelfmark.core.request_routes import register_request_routes
@@ -864,6 +894,13 @@ def api_download() -> Union[Response, Tuple[Response, int]]:
         # Per-user download overrides
         db_user_id = session.get('db_user_id')
         _username = session.get('user_id')
+        db_user_id, _username, on_behalf_error = _resolve_download_user_context(
+            db_user_id,
+            _username,
+            request.args.get("on_behalf_of_user_id"),
+        )
+        if on_behalf_error:
+            return on_behalf_error
         success, error_msg = backend.queue_book(
             book_id, priority,
             user_id=db_user_id, username=_username,
@@ -922,6 +959,13 @@ def api_download_release() -> Union[Response, Tuple[Response, int]]:
         # Per-user download overrides
         db_user_id = session.get('db_user_id')
         _username = session.get('user_id')
+        db_user_id, _username, on_behalf_error = _resolve_download_user_context(
+            db_user_id,
+            _username,
+            data.get("on_behalf_of_user_id"),
+        )
+        if on_behalf_error:
+            return on_behalf_error
         success, error_msg = backend.queue_release(
             release_payload, priority,
             user_id=db_user_id, username=_username,
@@ -953,6 +997,30 @@ def api_config() -> Union[Response, Tuple[Response, int]]:
         from shelfmark.config.env import _is_config_dir_writable
         from shelfmark.core.onboarding import is_onboarding_complete as _get_onboarding_complete
 
+        raw_db_user_id = session.get("db_user_id")
+        try:
+            db_user_id = int(raw_db_user_id) if raw_db_user_id is not None else None
+        except (TypeError, ValueError):
+            db_user_id = None
+
+        search_mode = app_config.get("SEARCH_MODE", "direct", user_id=db_user_id)
+        default_release_source = app_config.get(
+            "DEFAULT_RELEASE_SOURCE",
+            "direct_download",
+            user_id=db_user_id,
+        )
+        configured_metadata_provider = app_config.get(
+            "METADATA_PROVIDER",
+            "",
+            user_id=db_user_id,
+        )
+        _configured_metadata_provider_audiobook = app_config.get(
+            "METADATA_PROVIDER_AUDIOBOOK",
+            "",
+            user_id=db_user_id,
+        )
+        metadata_ui_provider = configured_metadata_provider or _configured_metadata_provider_audiobook
+
         config = {
             "calibre_web_url": app_config.get("CALIBRE_WEB_URL", ""),
             "audiobook_library_url": app_config.get("AUDIOBOOK_LIBRARY_URL", ""),
@@ -963,10 +1031,10 @@ def api_config() -> Union[Response, Tuple[Response, int]]:
             "default_language": app_config.BOOK_LANGUAGE,
             "supported_formats": app_config.SUPPORTED_FORMATS,
             "supported_audiobook_formats": app_config.SUPPORTED_AUDIOBOOK_FORMATS,
-            "search_mode": app_config.get("SEARCH_MODE", "direct"),
-            "metadata_sort_options": get_provider_sort_options(),
-            "metadata_search_fields": get_provider_search_fields(),
-            "default_release_source": app_config.get("DEFAULT_RELEASE_SOURCE", "direct_download"),
+            "search_mode": search_mode,
+            "metadata_sort_options": get_provider_sort_options(metadata_ui_provider),
+            "metadata_search_fields": get_provider_search_fields(metadata_ui_provider),
+            "default_release_source": default_release_source,
             "books_output_mode": app_config.get("BOOKS_OUTPUT_MODE", "folder"),
             "auto_open_downloads_sidebar": app_config.get("AUTO_OPEN_DOWNLOADS_SIDEBAR", True),
             "download_to_browser": app_config.get("DOWNLOAD_TO_BROWSER", False),
@@ -974,7 +1042,7 @@ def api_config() -> Union[Response, Tuple[Response, int]]:
             "onboarding_complete": _get_onboarding_complete(),
             # Default sort orders
             "default_sort": app_config.get("AA_DEFAULT_SORT", "relevance"),  # For direct mode (Anna's Archive)
-            "metadata_default_sort": get_provider_default_sort(),  # For universal mode
+            "metadata_default_sort": get_provider_default_sort(metadata_ui_provider),  # For universal mode
         }
         return jsonify(config)
     except Exception as e:
@@ -1433,6 +1501,55 @@ def api_cancel_download(book_id: str) -> Union[Response, Tuple[Response, int]]:
     except Exception as e:
         logger.error_trace(f"Cancel download error: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/download/<path:book_id>/retry', methods=['POST'])
+@login_required
+def api_retry_download(book_id: str) -> Union[Response, Tuple[Response, int]]:
+    """Retry a failed download."""
+    try:
+        task = backend.book_queue.get_task(book_id)
+        if task is None:
+            return jsonify({"error": "Download not found"}), 404
+
+        is_admin, db_user_id, can_access_status = _resolve_status_scope()
+        if not is_admin:
+            if not can_access_status or db_user_id is None:
+                return jsonify({"error": "User identity unavailable", "code": "user_identity_unavailable"}), 403
+
+            actor_username = session.get("user_id")
+            normalized_actor_username = actor_username if isinstance(actor_username, str) else None
+            if not _task_owned_by_actor(
+                task,
+                actor_user_id=db_user_id,
+                actor_username=normalized_actor_username,
+            ):
+                return jsonify({"error": "Forbidden", "code": "download_not_owned"}), 403
+
+        raw_owner_user_id = getattr(task, "user_id", None)
+        try:
+            owner_user_id = int(raw_owner_user_id) if raw_owner_user_id is not None else None
+        except (TypeError, ValueError):
+            owner_user_id = None
+
+        is_request_linked = bool(getattr(task, "request_id", None))
+        if not is_request_linked and owner_user_id is not None:
+            is_request_linked = _is_graduated_request_download(book_id, user_id=owner_user_id)
+        if is_request_linked:
+            return jsonify({"error": "Forbidden", "code": "requested_download_retry_forbidden"}), 403
+
+        success, error = backend.retry_download(book_id)
+        if success:
+            return jsonify({"status": "queued", "book_id": book_id})
+
+        if error == "Download not found":
+            return jsonify({"error": error}), 404
+
+        return jsonify({"error": error or "Download cannot be retried"}), 409
+    except Exception as e:
+        logger.error_trace(f"Retry download error: {e}")
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/api/queue/<path:book_id>/priority', methods=['PUT'])
 @login_required
@@ -1944,7 +2061,13 @@ def api_metadata_search() -> Union[Response, Tuple[Response, int]]:
         except ValueError:
             sort_order = SortOrder.RELEVANCE
 
-        provider = get_configured_provider(content_type=content_type)
+        raw_db_user_id = session.get("db_user_id")
+        try:
+            db_user_id = int(raw_db_user_id) if raw_db_user_id is not None else None
+        except (TypeError, ValueError):
+            db_user_id = None
+
+        provider = get_configured_provider(content_type=content_type, user_id=db_user_id)
         if not provider:
             return jsonify({
                 "error": "No metadata provider configured",

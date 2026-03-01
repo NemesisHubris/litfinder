@@ -33,6 +33,7 @@ const API = {
   download: `${API_BASE}/download`,
   status: `${API_BASE}/status`,
   cancelDownload: `${API_BASE}/download`,
+  retryDownload: `${API_BASE}/download`,
   setPriority: `${API_BASE}/queue`,
   clearCompleted: `${API_BASE}/queue/clear`,
   config: `${API_BASE}/config`,
@@ -280,14 +281,17 @@ export const getMetadataBookInfo = async (provider: string, bookId: string): Pro
   return transformMetadataToBook(response);
 };
 
-export const downloadBook = async (id: string): Promise<void> => {
+export const downloadBook = async (id: string, onBehalfOfUserId?: number): Promise<void> => {
   const params = new URLSearchParams();
   params.set('id', id);
+  if (typeof onBehalfOfUserId === 'number') {
+    params.set('on_behalf_of_user_id', String(onBehalfOfUserId));
+  }
   await fetchJSON(`${API.download}?${params.toString()}`);
 };
 
 // Download a specific release (from ReleaseModal)
-export const downloadRelease = async (release: {
+export type DownloadReleasePayload = {
   source: string;
   source_id: string;
   title: string;
@@ -307,10 +311,20 @@ export const downloadRelease = async (release: {
   series_position?: number;
   subtitle?: string;
   search_author?: string;
-}): Promise<void> => {
+};
+
+export const downloadRelease = async (
+  release: DownloadReleasePayload,
+  onBehalfOfUserId?: number
+): Promise<void> => {
+  const payload =
+    typeof onBehalfOfUserId === 'number'
+      ? { ...release, on_behalf_of_user_id: onBehalfOfUserId }
+      : release;
+
   await fetchJSON(`${API_BASE}/releases/download`, {
     method: 'POST',
-    body: JSON.stringify(release),
+    body: JSON.stringify(payload),
   });
 };
 
@@ -352,6 +366,10 @@ export const clearActivityHistory = async (): Promise<void> => {
 
 export const cancelDownload = async (id: string): Promise<void> => {
   await fetchJSON(`${API.cancelDownload}/${encodeURIComponent(id)}/cancel`, { method: 'DELETE' });
+};
+
+export const retryDownload = async (id: string): Promise<void> => {
+  await fetchJSON(`${API.retryDownload}/${encodeURIComponent(id)}/retry`, { method: 'POST' });
 };
 
 export const clearCompleted = async (): Promise<void> => {
@@ -631,6 +649,7 @@ export interface AdminUser {
 export interface SelfUserEditContext {
   user: AdminUser;
   deliveryPreferences: DeliveryPreferencesResponse | null;
+  searchPreferences: DeliveryPreferencesResponse | null;
   notificationPreferences: DeliveryPreferencesResponse | null;
   userOverridableKeys: string[];
   visibleUserSettingsSections?: string[];
@@ -730,6 +749,12 @@ export const getAdminDeliveryPreferences = async (
   userId: number
 ): Promise<DeliveryPreferencesResponse> => {
   return fetchJSON<DeliveryPreferencesResponse>(`${API_BASE}/admin/users/${userId}/delivery-preferences`);
+};
+
+export const getAdminSearchPreferences = async (
+  userId: number
+): Promise<DeliveryPreferencesResponse> => {
+  return fetchJSON<DeliveryPreferencesResponse>(`${API_BASE}/admin/users/${userId}/search-preferences`);
 };
 
 export const getAdminNotificationPreferences = async (
