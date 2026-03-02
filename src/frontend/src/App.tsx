@@ -384,6 +384,7 @@ function App() {
     observer.observe(el);
     headerObserverRef.current = observer;
   }, []);
+  const [isManualSearch, setIsManualSearch] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [selfSettingsOpen, setSelfSettingsOpen] = useState(false);
   const [configBannerOpen, setConfigBannerOpen] = useState(false);
@@ -749,26 +750,32 @@ function App() {
   }, [getDefaultMode, contentType]);
 
   const buildReleaseDownloadPayload = useCallback(
-    (book: Book, release: Release, releaseContentType: ContentType): DownloadReleasePayload => ({
-      source: release.source,
-      source_id: release.source_id,
-      title: book.title,    // Use book metadata title, not release/torrent title
-      author: book.author,  // Pass author from metadata
-      year: book.year,      // Pass year from metadata
-      format: release.format,
-      size: release.size,
-      size_bytes: release.size_bytes,
-      download_url: release.download_url,
-      protocol: release.protocol,
-      indexer: release.indexer,
-      seeders: release.seeders,
-      extra: release.extra,
-      preview: book.preview,  // Pass book cover from metadata
-      content_type: releaseContentType,  // For audiobook directory routing
-      series_name: book.series_name,
-      series_position: book.series_position,
-      subtitle: book.subtitle,
-    }),
+    (book: Book, release: Release, releaseContentType: ContentType): DownloadReleasePayload => {
+      const isManual = book.provider === 'manual';
+      const releasePreview = typeof release.extra?.preview === 'string' ? release.extra.preview : undefined;
+      const releaseAuthor = typeof release.extra?.author === 'string' ? release.extra.author : undefined;
+
+      return {
+        source: release.source,
+        source_id: release.source_id,
+        title: isManual ? release.title : book.title,
+        author: isManual ? (releaseAuthor || '') : book.author,
+        year: book.year,
+        format: release.format,
+        size: release.size,
+        size_bytes: release.size_bytes,
+        download_url: release.download_url,
+        protocol: release.protocol,
+        indexer: release.indexer,
+        seeders: release.seeders,
+        extra: release.extra,
+        preview: isManual ? (releasePreview || undefined) : book.preview,
+        content_type: releaseContentType,
+        series_name: book.series_name,
+        series_position: book.series_position,
+        subtitle: book.subtitle,
+      };
+    },
     []
   );
 
@@ -1289,6 +1296,50 @@ function App() {
     runSearchWithPolicyRefresh(query, { ...searchFieldValues, series: seriesName });
   }, [setSearchInput, clearTracking, searchFieldValues, advancedFilters, setAdvancedFilters, bookLanguages, defaultLanguageCodes, searchMode, runSearchWithPolicyRefresh]);
 
+  const handleManualSearch = useCallback(() => {
+    const trimmed = searchInput.trim();
+    if (!trimmed) return;
+    const manualId = `manual_${Date.now()}`;
+    const syntheticBook: Book = {
+      id: manualId,
+      title: trimmed,
+      author: '',
+      provider: 'manual',
+      provider_id: manualId,
+      search_title: trimmed,
+    };
+    setReleaseBook(syntheticBook);
+  }, [searchInput]);
+
+  // Manual search is only allowed when the default policy permits browsing releases
+  const universalDefaultMode = getUniversalDefaultPolicyMode();
+  const manualSearchAllowed = searchMode === 'universal'
+    && (universalDefaultMode === 'download' || universalDefaultMode === 'request_release');
+
+  // Reset manual search if policy changes to disallow it
+  useEffect(() => {
+    if (!manualSearchAllowed && isManualSearch) {
+      setIsManualSearch(false);
+    }
+  }, [manualSearchAllowed, isManualSearch]);
+
+  // Unified search dispatch: intercepts manual search mode, otherwise runs normal search
+  const handleSearchDispatch = useCallback(() => {
+    if (isManualSearch) {
+      handleManualSearch();
+      return;
+    }
+    const query = buildSearchQuery({
+      searchInput,
+      showAdvanced,
+      advancedFilters,
+      bookLanguages,
+      defaultLanguage: defaultLanguageCodes,
+      searchMode,
+    });
+    runSearchWithPolicyRefresh(query);
+  }, [isManualSearch, handleManualSearch, searchInput, showAdvanced, advancedFilters, bookLanguages, defaultLanguageCodes, searchMode, runSearchWithPolicyRefresh]);
+
   const isBrowseFulfilMode = fulfillingRequest !== null;
   const activeReleaseBook = fulfillingRequest?.book ?? releaseBook;
   const activeReleaseContentType = fulfillingRequest?.contentType ?? contentType;
@@ -1343,27 +1394,18 @@ function App() {
           actingAsUser={actingAsUser}
           onActingAsUserChange={setActingAsUser}
           statusCounts={statusCounts}
-          onLogoClick={() => handleResetSearch(config)}
+          onLogoClick={() => { handleResetSearch(config); setIsManualSearch(false); }}
           authRequired={authRequired}
           isAuthenticated={isAuthenticated}
           onLogout={handleLogoutWithCleanup}
-          onSearch={() => {
-            const query = buildSearchQuery({
-              searchInput,
-              showAdvanced,
-              advancedFilters,
-              bookLanguages,
-              defaultLanguage: defaultLanguageCodes,
-              searchMode,
-            });
-            runSearchWithPolicyRefresh(query);
-          }}
+          onSearch={handleSearchDispatch}
           onAdvancedToggle={() => setShowAdvanced(!showAdvanced)}
           isLoading={isSearching}
           onShowToast={showToast}
           onRemoveToast={removeToast}
           contentType={contentType}
           onContentTypeChange={setContentType}
+          isManualSearch={isManualSearch}
         />
       </div>
 
@@ -1396,17 +1438,9 @@ function App() {
         metadataSearchFields={config?.metadata_search_fields}
         searchFieldValues={searchFieldValues}
         onSearchFieldChange={updateSearchFieldValue}
-        onSubmit={() => {
-          const query = buildSearchQuery({
-            searchInput,
-            showAdvanced,
-            advancedFilters,
-            bookLanguages,
-            defaultLanguage: defaultLanguageCodes,
-            searchMode,
-          });
-          runSearchWithPolicyRefresh(query);
-        }}
+        onSubmit={handleSearchDispatch}
+        isManualSearch={isManualSearch}
+        onManualSearchToggle={manualSearchAllowed ? () => setIsManualSearch(prev => !prev) : undefined}
       />
 
       <main
@@ -1418,7 +1452,7 @@ function App() {
         }
       >
         <SearchSection
-          onSearch={(query) => runSearchWithPolicyRefresh(query)}
+          onSearch={() => handleSearchDispatch()}
           isLoading={isSearching}
           isInitialState={isInitialState}
           bookLanguages={bookLanguages}
@@ -1436,6 +1470,8 @@ function App() {
           onSearchFieldChange={updateSearchFieldValue}
           contentType={contentType}
           onContentTypeChange={setContentType}
+          isManualSearch={isManualSearch}
+          onManualSearchToggle={manualSearchAllowed ? () => setIsManualSearch(prev => !prev) : undefined}
         />
 
         <ResultsSection
@@ -1493,9 +1529,9 @@ function App() {
             bookLanguages={bookLanguages}
             currentStatus={statusForButtonState}
             defaultReleaseSource={config?.default_release_source}
-            onSearchSeries={isBrowseFulfilMode ? undefined : handleSearchSeries}
-            defaultShowManualQuery={isBrowseFulfilMode}
-            isRequestMode={isBrowseFulfilMode}
+            onSearchSeries={isBrowseFulfilMode || activeReleaseBook?.provider === 'manual' ? undefined : handleSearchSeries}
+            defaultShowManualQuery={isBrowseFulfilMode || activeReleaseBook?.provider === 'manual'}
+            isRequestMode={isBrowseFulfilMode || activeReleaseBook?.provider === 'manual'}
           />
         )}
 

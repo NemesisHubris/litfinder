@@ -5,7 +5,7 @@ import { useSearchMode } from '../contexts/SearchModeContext';
 import { LanguageMultiSelect } from './LanguageMultiSelect';
 import { DropdownList } from './DropdownList';
 import { CONTENT_OPTIONS } from '../data/filterOptions';
-import { SearchFieldRenderer } from './shared';
+import { SearchFieldRenderer, ToggleSwitch } from './shared';
 
 const FORMAT_TYPES = ['pdf', 'epub', 'mobi', 'azw3', 'fb2', 'djvu', 'cbz', 'cbr', 'zip', 'rar'] as const;
 
@@ -24,6 +24,9 @@ interface AdvancedFiltersProps {
   onSearchFieldChange?: (key: string, value: string | number | boolean) => void;
   // Submit handler for Enter key
   onSubmit?: () => void;
+  // Manual search mode (universal only)
+  isManualSearch?: boolean;
+  onManualSearchToggle?: () => void;
 }
 
 export const AdvancedFilters = ({
@@ -39,6 +42,8 @@ export const AdvancedFilters = ({
   searchFieldValues = {},
   onSearchFieldChange,
   onSubmit,
+  isManualSearch = false,
+  onManualSearchToggle,
 }: AdvancedFiltersProps) => {
   const { searchMode } = useSearchMode();
   const { isbn, author, title, lang, content, formats } = filters;
@@ -73,10 +78,28 @@ export const AdvancedFilters = ({
 
   if (!visible) return null;
 
-  // Universal search mode: render dynamic provider fields
+  // Universal search mode: render dynamic provider fields + manual search toggle
   if (searchMode === 'universal') {
-    // If no fields defined for this provider, don't show the section
-    if (metadataSearchFields.length === 0) return null;
+    const hasProviderFields = metadataSearchFields.length > 0;
+
+    // If no fields and no toggle available, don't show the section
+    if (!hasProviderFields && !onManualSearchToggle) return null;
+
+    const manualToggle = onManualSearchToggle ? (
+      <div className="space-y-1.5">
+        <div className="flex items-start justify-between gap-2">
+          <label className="text-sm font-medium">Manual search</label>
+        </div>
+        <div>
+          <ToggleSwitch
+            checked={isManualSearch}
+            onChange={() => onManualSearchToggle()}
+            color="emerald"
+          />
+        </div>
+        <p className="text-xs"><span className="opacity-60">Search release sources directly</span></p>
+      </div>
+    ) : null;
 
     const universalForm = (
       <form
@@ -86,7 +109,8 @@ export const AdvancedFilters = ({
           'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 px-2 lg:ml-[calc(3rem+1rem)] lg:w-[50vw]'
         }
       >
-        {metadataSearchFields.map((field) => (
+        {manualToggle && <div className="col-span-full">{manualToggle}</div>}
+        {!isManualSearch && metadataSearchFields.map((field) => (
           <div key={field.key}>
             {field.type !== 'CheckboxSearchField' && (
               <label htmlFor={`${field.key}-input`} className="block text-sm mb-1 opacity-80">
