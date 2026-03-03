@@ -585,9 +585,13 @@ function App() {
   }, [isAuthenticated, loadConfig]);
 
   const runSearchWithPolicyRefresh = useCallback(
-    (query: string, fields = searchFieldValues) => {
+    (
+      query: string,
+      fields = searchFieldValues,
+      contentTypeOverride?: ContentType
+    ) => {
       void refreshRequestPolicy();
-      handleSearch(query, config, fields);
+      handleSearch(query, config, fields, contentTypeOverride);
     },
     [refreshRequestPolicy, handleSearch, config, searchFieldValues]
   );
@@ -596,13 +600,23 @@ function App() {
   useEffect(() => {
     if (
       wasProcessed &&
-      parsedParams?.hasSearchParams &&
+      parsedParams &&
       !urlSearchExecutedRef.current &&
       config
     ) {
       urlSearchExecutedRef.current = true;
 
       const searchMode = config.search_mode || 'direct';
+      const urlContentTypeOverride =
+        searchMode === 'universal' ? parsedParams.contentType : undefined;
+
+      if (urlContentTypeOverride && urlContentTypeOverride !== contentType) {
+        setContentType(urlContentTypeOverride);
+      }
+
+      if (!parsedParams.hasSearchParams) {
+        return;
+      }
       const bookLanguages = config.book_languages || [];
       const defaultLanguageCodes =
         config.default_language && config.default_language.length > 0
@@ -645,11 +659,12 @@ function App() {
         searchMode,
       });
 
-      runSearchWithPolicyRefresh(query);
+      runSearchWithPolicyRefresh(query, searchFieldValues, urlContentTypeOverride);
     }
   }, [
     wasProcessed,
     parsedParams,
+    contentType,
     config,
     advancedFilters,
     searchFieldValues,
@@ -1315,6 +1330,23 @@ function App() {
   const universalDefaultMode = getUniversalDefaultPolicyMode();
   const manualSearchAllowed = searchMode === 'universal'
     && (universalDefaultMode === 'download' || universalDefaultMode === 'request_release');
+  const isListBrowsing = useMemo(() => {
+    const dynamicFieldKeys = (config?.metadata_search_fields ?? [])
+      .filter((field) => field.type === 'DynamicSelectSearchField')
+      .map((field) => field.key);
+
+    if (dynamicFieldKeys.length === 0) {
+      return false;
+    }
+
+    return dynamicFieldKeys.some((key) => {
+      const value = searchFieldValues[key];
+      if (typeof value === 'string') {
+        return value.trim() !== '';
+      }
+      return value !== undefined && value !== null && value !== false;
+    });
+  }, [config?.metadata_search_fields, searchFieldValues]);
 
   // Reset manual search if policy changes to disallow it
   useEffect(() => {
@@ -1406,6 +1438,7 @@ function App() {
           contentType={contentType}
           onContentTypeChange={setContentType}
           isManualSearch={isManualSearch}
+          searchDisabled={isListBrowsing}
         />
       </div>
 
@@ -1472,6 +1505,7 @@ function App() {
           onContentTypeChange={setContentType}
           isManualSearch={isManualSearch}
           onManualSearchToggle={manualSearchAllowed ? () => setIsManualSearch(prev => !prev) : undefined}
+          searchDisabled={isListBrowsing}
         />
 
         <ResultsSection
