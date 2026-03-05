@@ -227,6 +227,27 @@ function App() {
 
   const requestRoleIsAdmin = requestPolicy ? Boolean(requestPolicy.is_admin) : false;
 
+  // Compute which content types this user is allowed to search for.
+  // If a content type's default policy mode is 'blocked', hide it from the dropdown.
+  const allowedContentTypes = useMemo((): ContentType[] => {
+    // If policy not loaded yet or user is admin, allow everything
+    if (!requestPolicy || requestRoleIsAdmin || !requestsPolicyEnabled) {
+      return ['ebook', 'audiobook'];
+    }
+    const types: ContentType[] = [];
+    if (getDefaultMode('ebook') !== 'blocked') types.push('ebook');
+    if (getDefaultMode('audiobook') !== 'blocked') types.push('audiobook');
+    // If both are blocked, still show both (user can see results, just can't download)
+    return types.length > 0 ? types : ['ebook', 'audiobook'];
+  }, [requestPolicy, requestRoleIsAdmin, requestsPolicyEnabled, getDefaultMode]);
+
+  // Auto-switch content type if the current selection is blocked
+  useEffect(() => {
+    if (allowedContentTypes.length > 0 && !allowedContentTypes.includes(contentType)) {
+      setContentType(allowedContentTypes[0]);
+    }
+  }, [allowedContentTypes, contentType]);
+
   const {
     isLoading: isRequestsLoading,
     cancelRequest: cancelUserRequest,
@@ -356,6 +377,7 @@ function App() {
     handleSortChange,
     searchFieldValues,
     updateSearchFieldValue,
+    searchFieldLabels,
     // Pagination (universal mode)
     hasMore,
     isLoadingMore,
@@ -1385,12 +1407,34 @@ function App() {
     });
   }, [config?.metadata_search_fields, searchFieldValues]);
 
+  const activeListLabel = useMemo(() => {
+    if (!isListBrowsing) return '';
+    const field = (config?.metadata_search_fields ?? [])
+      .find((f) => f.type === 'DynamicSelectSearchField' && searchFieldValues[f.key]);
+    return field ? (searchFieldLabels[field.key] || '') : '';
+  }, [isListBrowsing, config?.metadata_search_fields, searchFieldValues, searchFieldLabels]);
+
   // Reset manual search if policy changes to disallow it
   useEffect(() => {
     if (!manualSearchAllowed && isManualSearch) {
       setIsManualSearch(false);
     }
   }, [manualSearchAllowed, isManualSearch]);
+
+  const handleManualSearchToggle = useCallback(() => {
+    setIsManualSearch(prev => {
+      if (!prev) {
+        // Turning on: clear any dynamic select field values (e.g. list selection)
+        const dynamicKeys = (config?.metadata_search_fields ?? [])
+          .filter((f) => f.type === 'DynamicSelectSearchField')
+          .map((f) => f.key);
+        for (const key of dynamicKeys) {
+          updateSearchFieldValue(key, '');
+        }
+      }
+      return !prev;
+    });
+  }, [config?.metadata_search_fields, updateSearchFieldValue]);
 
   // Unified search dispatch: intercepts manual search mode, otherwise runs normal search
   const handleSearchDispatch = useCallback(() => {
@@ -1474,8 +1518,10 @@ function App() {
           onRemoveToast={removeToast}
           contentType={contentType}
           onContentTypeChange={setContentType}
+          allowedContentTypes={allowedContentTypes}
           isManualSearch={isManualSearch}
           searchDisabled={isListBrowsing}
+          activeListLabel={activeListLabel}
         />
       </div>
 
@@ -1510,7 +1556,7 @@ function App() {
         onSearchFieldChange={updateSearchFieldValue}
         onSubmit={handleSearchDispatch}
         isManualSearch={isManualSearch}
-        onManualSearchToggle={manualSearchAllowed ? () => setIsManualSearch(prev => !prev) : undefined}
+        onManualSearchToggle={manualSearchAllowed ? handleManualSearchToggle : undefined}
       />
 
       <main
@@ -1540,9 +1586,11 @@ function App() {
           onSearchFieldChange={updateSearchFieldValue}
           contentType={contentType}
           onContentTypeChange={setContentType}
+          allowedContentTypes={allowedContentTypes}
           isManualSearch={isManualSearch}
-          onManualSearchToggle={manualSearchAllowed ? () => setIsManualSearch(prev => !prev) : undefined}
+          onManualSearchToggle={manualSearchAllowed ? handleManualSearchToggle : undefined}
           searchDisabled={isListBrowsing}
+          activeListLabel={activeListLabel}
         />
 
         <ResultsSection

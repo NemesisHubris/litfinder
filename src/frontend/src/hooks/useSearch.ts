@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Book, AppConfig, AdvancedFilterState, ContentType } from '../types';
 import { searchBooks, searchMetadata, AuthenticationError } from '../services/api';
@@ -41,7 +41,8 @@ interface UseSearchReturn {
   resetSortFilter: () => void;
   // Universal mode search field values
   searchFieldValues: SearchFieldValues;
-  updateSearchFieldValue: (key: string, value: string | number | boolean) => void;
+  updateSearchFieldValue: (key: string, value: string | number | boolean, label?: string) => void;
+  searchFieldLabels: Record<string, string>;
   // Pagination (universal mode only)
   hasMore: boolean;
   isLoadingMore: boolean;
@@ -70,6 +71,7 @@ export function useSearch(options: UseSearchOptions): UseSearchReturn {
 
   // Universal mode: provider-specific search field values
   const [searchFieldValues, setSearchFieldValues] = useState<SearchFieldValues>({});
+  const [searchFieldLabels, setSearchFieldLabels] = useState<Record<string, string>>({});
 
   // Pagination state (universal mode only)
   const [currentPage, setCurrentPage] = useState(1);
@@ -83,31 +85,18 @@ export function useSearch(options: UseSearchOptions): UseSearchReturn {
     sort: string;
     fieldValues: SearchFieldValues;
   } | null>(null);
-  const previousContentTypeRef = useRef<ContentType>(contentType);
-
-  // Switching media type starts a new search session.
-  useEffect(() => {
-    if (previousContentTypeRef.current === contentType) {
-      return;
-    }
-
-    previousContentTypeRef.current = contentType;
-    setBooks([]);
-    setLastSearchQuery('');
-    setSearchFieldValues({});
-    setHasMore(false);
-    setTotalFound(0);
-    setCurrentPage(1);
-    lastSearchParamsRef.current = null;
-    onSearchReset?.();
-  }, [contentType, onSearchReset]);
 
   const updateAdvancedFilters = useCallback((updates: Partial<AdvancedFilterState>) => {
     setAdvancedFilters(prev => ({ ...prev, ...updates }));
   }, []);
 
-  const updateSearchFieldValue = useCallback((key: string, value: string | number | boolean) => {
+  const updateSearchFieldValue = useCallback((key: string, value: string | number | boolean, label?: string) => {
     setSearchFieldValues(prev => ({ ...prev, [key]: value }));
+    if (label !== undefined) {
+      setSearchFieldLabels(prev => ({ ...prev, [key]: label }));
+    } else if (!value) {
+      setSearchFieldLabels(prev => { const next = { ...prev }; delete next[key]; return next; });
+    }
   }, []);
 
   const resetSortFilter = useCallback(() => {
@@ -319,6 +308,7 @@ export function useSearch(options: UseSearchOptions): UseSearchReturn {
     // Universal mode search field values
     searchFieldValues,
     updateSearchFieldValue,
+    searchFieldLabels,
     // Pagination (universal mode only)
     hasMore,
     isLoadingMore,
