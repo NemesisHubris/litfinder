@@ -27,6 +27,7 @@ interface AdvancedFiltersProps {
   activeMetadataProvider?: string | null;
   onMetadataProviderChange?: (provider: string) => void;
   contentType?: ContentType;
+  combinedMode?: boolean;
   isAdmin?: boolean;
   onClose?: () => void;
 }
@@ -50,6 +51,7 @@ export const AdvancedFilters = ({
   activeMetadataProvider,
   onMetadataProviderChange,
   contentType = 'ebook',
+  combinedMode = false,
   isAdmin = false,
   onClose,
 }: AdvancedFiltersProps) => {
@@ -121,35 +123,33 @@ export const AdvancedFilters = ({
         </div>
       )}
       {isAdmin && (
-        <>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <DropdownList
+            label="Search Mode"
+            options={SEARCH_MODE_OPTIONS}
+            value={searchMode}
+            onChange={(value) => {
+              const next = Array.isArray(value) ? value[0] ?? 'direct' : value;
+              onSearchModeChange(next === 'universal' ? 'universal' : 'direct');
+            }}
+            placeholder="Choose a mode"
+            widthClassName="w-full"
+          />
+
+          {searchMode === 'universal' && (
             <DropdownList
-              label="Search Mode"
-              options={SEARCH_MODE_OPTIONS}
-              value={searchMode}
+              label={combinedMode ? 'Combined Metadata Provider' : contentType === 'audiobook' ? 'Audiobook Metadata Provider' : 'Book Metadata Provider'}
+              options={providerOptions}
+              value={activeMetadataProvider ?? ''}
               onChange={(value) => {
-                const next = Array.isArray(value) ? value[0] ?? 'direct' : value;
-                onSearchModeChange(next === 'universal' ? 'universal' : 'direct');
+                const next = Array.isArray(value) ? value[0] ?? '' : value;
+                onMetadataProviderChange?.(next);
               }}
-              placeholder="Choose a mode"
+              placeholder="Choose a provider"
               widthClassName="w-full"
             />
-
-            {searchMode === 'universal' && (
-              <DropdownList
-                label={contentType === 'audiobook' ? 'Audiobook Metadata Provider' : 'Book Metadata Provider'}
-                options={providerOptions}
-                value={activeMetadataProvider ?? ''}
-                onChange={(value) => {
-                  const next = Array.isArray(value) ? value[0] ?? '' : value;
-                  onMetadataProviderChange?.(next);
-                }}
-                placeholder="Choose a provider"
-                widthClassName="w-full"
-              />
-            )}
-          </div>
-        </>
+          )}
+        </div>
       )}
 
       {searchMode === 'direct' && (

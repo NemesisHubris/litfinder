@@ -468,6 +468,14 @@ def search_mode_settings():
             ),
             default=True,
         ),
+        CheckboxField(
+            key="SHOW_COMBINED_SELECTOR",
+            label="Show Combined Download Selector",
+            description="Show the option to search for and download both a book and audiobook together.",
+            default=True,
+            show_when={"field": "SEARCH_MODE", "value": "universal"},
+            user_overridable=True,
+        ),
         HeadingField(
             key="universal_mode_heading",
             title="Universal Mode Settings",
@@ -487,6 +495,15 @@ def search_mode_settings():
             key="METADATA_PROVIDER_AUDIOBOOK",
             label="Audiobook Metadata Provider",
             description="Metadata provider for audiobook searches. Uses the book provider if not set.",
+            options=_get_metadata_provider_options_with_none,  # Callable - includes "Use main provider" option
+            default="",
+            show_when={"field": "SEARCH_MODE", "value": "universal"},
+            user_overridable=True,
+        ),
+        SelectField(
+            key="METADATA_PROVIDER_COMBINED",
+            label="Combined Mode Metadata Provider",
+            description="Metadata provider for combined mode searches. Uses the book provider if not set.",
             options=_get_metadata_provider_options_with_none,  # Callable - includes "Use main provider" option
             default="",
             show_when={"field": "SEARCH_MODE", "value": "universal"},

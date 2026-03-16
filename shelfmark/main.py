@@ -1014,6 +1014,7 @@ def api_config() -> Union[Response, Tuple[Response, int]]:
             "default_release_source": default_release_source,
             "default_release_source_audiobook": default_release_source_audiobook,
             "show_release_source_links": app_config.get("SHOW_RELEASE_SOURCE_LINKS", True),
+            "show_combined_selector": app_config.get("SHOW_COMBINED_SELECTOR", True, user_id=db_user_id),
             "books_output_mode": app_config.get("BOOKS_OUTPUT_MODE", "folder"),
             "auto_open_downloads_sidebar": app_config.get("AUTO_OPEN_DOWNLOADS_SIDEBAR", True),
             "hardcover_auto_remove_on_download": app_config.get("HARDCOVER_AUTO_REMOVE_ON_DOWNLOAD", True),
@@ -1982,6 +1983,11 @@ def api_metadata_providers() -> Union[Response, Tuple[Response, int]]:
             user_id=db_user_id,
             fallback_to_main=False,
         )
+        configured_combined_metadata_provider = get_configured_provider_name(
+            content_type="combined",
+            user_id=db_user_id,
+            fallback_to_main=False,
+        )
         providers = []
         for info in list_providers():
             enabled_key = f"{info['name'].upper()}_ENABLED"
@@ -2006,6 +2012,7 @@ def api_metadata_providers() -> Union[Response, Tuple[Response, int]]:
             "providers": providers,
             "configured_provider": configured_metadata_provider or None,
             "configured_provider_audiobook": configured_audiobook_metadata_provider or None,
+            "configured_provider_combined": configured_combined_metadata_provider or None,
         })
     except Exception as e:
         logger.error_trace(f"Metadata providers error: {e}")
