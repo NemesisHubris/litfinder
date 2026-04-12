@@ -10,6 +10,10 @@ from shelfmark.config.booklore_settings import (
     get_booklore_library_options,
     get_booklore_path_options,
 )
+from shelfmark.config.download_settings_handlers import (
+    check_audiobook_destination,
+    check_books_destination,
+)
 from shelfmark.config.email_settings import check_email_connection
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.settings_registry import (
@@ -618,14 +622,14 @@ def network_settings() -> list[SettingsField]:
             description=(
                 "All traffic is routed through Tor. Requires container restart to change."
                 if tor_enabled
-                else "Route all traffic through Tor for enhanced privacy."
+                else "Route all traffic through Tor for enhanced privacy. Requires root startup."
             ),
             default=tor_enabled,  # Reflects actual state from env var
             disabled=True,  # Tor state requires container restart
             disabled_reason=(
                 "Tor routing is active. Set USING_TOR=false and restart to disable."
                 if tor_enabled
-                else "Set USING_TOR=true env var and restart with NET_ADMIN/NET_RAW capabilities."
+                else "Set USING_TOR=true env var and restart as root."
             ),
         ),
         SelectField(
@@ -919,6 +923,17 @@ def download_settings() -> list[SettingsField]:
                 "value": "folder",
             },
         ),
+        ActionButton(
+            key="test_destination",
+            label="Test Destination",
+            description="Check that Shelfmark can create and write to this destination.",
+            style="primary",
+            callback=check_books_destination,
+            show_when={
+                "field": "BOOKS_OUTPUT_MODE",
+                "value": "folder",
+            },
+        ),
         SelectField(
             key="FILE_ORGANIZATION",
             label="File Organization",
@@ -1182,6 +1197,14 @@ def download_settings() -> list[SettingsField]:
             label="Destination",
             description="Directory where downloaded audiobook files are saved. Leave empty to use the Books destination.",
             user_overridable=True,
+            universal_only=True,
+        ),
+        ActionButton(
+            key="test_destination_audiobook",
+            label="Test Destination",
+            description="Check that Shelfmark can create and write to this audiobook destination.",
+            style="primary",
+            callback=check_audiobook_destination,
             universal_only=True,
         ),
         SelectField(
