@@ -403,6 +403,7 @@ _BUILTIN_SOURCE_MODULES = (
     "shelfmark.release_sources.audiobookbay",
     "shelfmark.release_sources.direct_download",
     "shelfmark.release_sources.irc",
+    "shelfmark.release_sources.newznab",
     "shelfmark.release_sources.prowlarr",
 )
 _builtin_source_state = {"loaded": False}
