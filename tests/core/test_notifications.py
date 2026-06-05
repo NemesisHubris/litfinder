@@ -234,7 +234,7 @@ def test_dispatch_to_apprise_uses_shelfmark_asset_defaults(monkeypatch):
 
     assert result["success"] is True
     assert fake_apprise.asset_kwargs is not None
-    assert fake_apprise.asset_kwargs["app_id"] == "Shelfmark"
+    assert fake_apprise.asset_kwargs["app_id"] == "LitFinder"
     assert "logo.png" in fake_apprise.asset_kwargs["image_url_logo"]
 
 
@@ -254,7 +254,7 @@ def test_dispatch_to_apprise_passes_shelfmark_asset_to_instantiate(monkeypatch):
     instantiate_call = fake_apprise.client.instantiate_calls[0]
     asset_kwargs = instantiate_call["asset_kwargs"]
     assert isinstance(asset_kwargs, dict)
-    assert asset_kwargs["app_id"] == "Shelfmark"
+    assert asset_kwargs["app_id"] == "LitFinder"
     assert "logo.png" in asset_kwargs["image_url_logo"]
 
 
