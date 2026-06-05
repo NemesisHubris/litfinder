@@ -2479,7 +2479,7 @@ function App() {
             onSearch={handleSearchDispatch}
             isLoading={isSearching}
             isInitialState={isInitialState}
-            searchPageTitle={config?.search_page_title || 'Shelfmark'}
+            searchPageTitle={config?.search_page_title || 'LitFinder'}
             bookLanguages={bookLanguages}
             defaultLanguage={defaultLanguageCodes}
             logoUrl={logoUrl}

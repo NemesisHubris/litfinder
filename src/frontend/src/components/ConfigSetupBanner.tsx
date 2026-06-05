@@ -114,7 +114,7 @@ export const ConfigSetupBanner = ({
           <p className="text-sm opacity-80">
             {showContinueButton
               ? 'To save settings, add a config volume to your Docker Compose file:'
-              : 'Shelfmark now has a settings page! To enable it, add a config volume to your Docker Compose file:'}
+              : 'LitFinder now has a settings page! To enable it, add a config volume to your Docker Compose file:'}
           </p>
 
           {/* Code snippet */}
