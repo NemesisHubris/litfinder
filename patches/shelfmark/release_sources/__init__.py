@@ -621,7 +621,9 @@ def _install_custom_source_requirements(custom_dir: object) -> None:
 
     Only runs when CUSTOM_SOURCE_AUTO_INSTALL=true is set in the environment.
     Off by default — set it explicitly to opt in.
+    Skips install if requirements.txt hasn't changed since the last successful run.
     """
+    import hashlib
     import os
     import subprocess
     import sys
@@ -637,6 +639,13 @@ def _install_custom_source_requirements(custom_dir: object) -> None:
 
     req_file = custom_dir / "requirements.txt"  # type: ignore[operator]
     if not req_file.is_file():
+        return
+
+    # Only reinstall if requirements.txt has changed since last successful install
+    hash_file = custom_dir / ".requirements.hash"  # type: ignore[operator]
+    current_hash = hashlib.sha256(req_file.read_bytes()).hexdigest()  # type: ignore[union-attr]
+    if hash_file.is_file() and hash_file.read_text().strip() == current_hash:  # type: ignore[union-attr]
+        logger.debug("Custom source dependencies already up to date, skipping install.")
         return
 
     logger.info("Installing custom source dependencies from %s — this may take a moment…", req_file)
@@ -659,6 +668,7 @@ def _install_custom_source_requirements(custom_dir: object) -> None:
         )
         if result.returncode == 0:
             logger.info("Custom source dependencies installed successfully.")
+            hash_file.write_text(current_hash)  # type: ignore[union-attr]
         else:
             logger.warning(
                 "Custom source dependency install finished with errors:\n%s",
