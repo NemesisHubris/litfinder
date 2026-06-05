@@ -247,4 +247,4 @@ dev-transmission/
 dev-deluge/
 dev-sabnzbd/
 dev-nzbget/
-secrets/wireguard_private_key_dev
+secrets/
