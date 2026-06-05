@@ -233,7 +233,7 @@ The frontend dev server proxies to the backend on port 8084.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+AGPL-3.0 — see [LICENSE](LICENSE) for details. Original code by CaliBrain is MIT licensed; modifications and additions are licensed under AGPL-3.0.
 
 ## ⚠️ Disclaimer
 
