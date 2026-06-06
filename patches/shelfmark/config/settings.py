@@ -157,7 +157,9 @@ def _custom_sources_about_fields() -> list:
             description=(
                 "Custom sources are Python scripts you place in the custom_sources/ folder "
                 "inside your Shelfmark config directory. Each script adds a new search and "
-                "download source without touching Shelfmark's built-in code."
+                "download source without touching Shelfmark's built-in code. "
+                "Ready-made sources are available at "
+                "[github.com/NemesisHubris/LitFinder-Custom-Sources](https://github.com/NemesisHubris/LitFinder-Custom-Sources)."
             ),
         ),
         HeadingField(
