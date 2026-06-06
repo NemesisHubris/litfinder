@@ -58,7 +58,7 @@ SAMPLE_DETAIL_HTML = """
 <table>
     <tr>
         <td>Info Hash</td>
-        <td>ABC123DEF456GHI789JKL012MNO345PQR678STU</td>
+        <td>ABCDEF1234567890ABCDEF1234567890ABCDEF12</td>
     </tr>
     <tr>
         <td>Tracker 1</td>
@@ -83,7 +83,7 @@ DETAIL_HTML_NO_TRACKERS = """
 <table>
     <tr>
         <td>Info Hash</td>
-        <td>ABC123DEF456GHI789JKL012MNO345PQR678STU</td>
+        <td>ABCDEF1234567890ABCDEF1234567890ABCDEF12</td>
     </tr>
 </table>
 </body>
@@ -360,7 +360,7 @@ class TestExtractMagnetLink:
 
         assert magnet_link is not None
         assert magnet_link.startswith("magnet:?xt=urn:btih:")
-        assert "ABC123DEF456GHI789JKL012MNO345PQR678STU" in magnet_link
+        assert "ABCDEF1234567890ABCDEF1234567890ABCDEF12" in magnet_link
         assert "udp%3A//tracker.openbittorrent.com%3A80" in magnet_link
         assert "http%3A//tracker.example.com%3A8080" in magnet_link
         assert mock_html_get.call_count == 2
@@ -395,7 +395,7 @@ class TestExtractMagnetLink:
 
         assert magnet_link is not None
         assert magnet_link.startswith("magnet:?xt=urn:btih:")
-        assert "ABC123DEF456GHI789JKL012MNO345PQR678STU" in magnet_link
+        assert "ABCDEF1234567890ABCDEF1234567890ABCDEF12" in magnet_link
         # Should contain default trackers
         assert "udp%3A//tracker.openbittorrent.com%3A80" in magnet_link
 
@@ -441,7 +441,7 @@ class TestExtractMagnetLink:
         <table>
             <tr>
                 <td>Info Hash</td>
-                <td>ABC 123 DEF 456</td>
+                <td>ABCDEF1234 567890ABCD EF12345678 90ABCDEF12</td>
             </tr>
         </table>
         </body>
@@ -456,4 +456,4 @@ class TestExtractMagnetLink:
 
         assert magnet_link is not None
         # Info hash should be cleaned (no spaces, uppercase)
-        assert "ABC123DEF456" in magnet_link
+        assert "ABCDEF1234567890ABCDEF1234567890ABCDEF12" in magnet_link

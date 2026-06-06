@@ -2,6 +2,17 @@ import asyncio
 
 import pytest
 
+try:
+    import seleniumbase as _seleniumbase  # noqa: F401
+
+    _SELENIUMBASE_AVAILABLE = True
+except ImportError:
+    _SELENIUMBASE_AVAILABLE = False
+
+requires_seleniumbase = pytest.mark.skipif(
+    not _SELENIUMBASE_AVAILABLE, reason="seleniumbase not installed"
+)
+
 
 def test_bypass_tries_all_methods_before_abort(monkeypatch):
     """Regression test for issue #524: don't abort before cycling through bypass methods."""
@@ -173,6 +184,7 @@ def test_extract_cookies_from_cdp_normalizes_session_expiry():
     assert internal_bypasser.get_cf_cookies_for_domain("example.com") == {}
 
 
+@requires_seleniumbase
 def test_get_page_info_returns_safe_defaults_on_cdp_errors():
     from seleniumbase.undetected.cdp_driver.connection import ProtocolException
 
@@ -195,6 +207,7 @@ def test_get_page_info_returns_safe_defaults_on_cdp_errors():
     assert current_url == ""
 
 
+@requires_seleniumbase
 def test_create_cdp_browser_times_out_and_cleans_up(monkeypatch):
     import shelfmark.bypass.internal_bypasser as internal_bypasser
 
@@ -221,6 +234,7 @@ def test_create_cdp_browser_times_out_and_cleans_up(monkeypatch):
     assert cleanup_calls == ["cleanup"]
 
 
+@requires_seleniumbase
 def test_create_cdp_browser_wraps_plain_startup_exception_and_cleans_up(monkeypatch):
     import shelfmark.bypass.internal_bypasser as internal_bypasser
 

@@ -24,8 +24,13 @@ from typing import Any, Protocol, TypedDict, TypeGuard
 from urllib.parse import urlparse
 
 import requests
-from seleniumbase import cdp_driver
-from seleniumbase.undetected.cdp_driver.connection import ProtocolException
+
+try:
+    from seleniumbase import cdp_driver
+    from seleniumbase.undetected.cdp_driver.connection import ProtocolException
+except ImportError:
+    cdp_driver = None  # type: ignore[assignment]
+    ProtocolException = RuntimeError  # type: ignore[assignment,misc]
 
 from shelfmark.bypass import BypassCancelledError
 from shelfmark.bypass.fingerprint import get_screen_size
