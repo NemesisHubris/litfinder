@@ -809,7 +809,7 @@ def _on_save_downloads(values: dict[str, Any]) -> dict[str, Any]:
 
         try:
             port = int(effective.get("EMAIL_SMTP_PORT", 587))
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             return {"error": True, "message": "SMTP port must be a number", "values": values}
 
         if port < 1 or port > _SMTP_PORT_MAX:
@@ -821,7 +821,7 @@ def _on_save_downloads(values: dict[str, Any]) -> dict[str, Any]:
 
         try:
             timeout_seconds = int(effective.get("EMAIL_SMTP_TIMEOUT_SECONDS", 60))
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             return {
                 "error": True,
                 "message": "SMTP timeout (seconds) must be a number",
@@ -846,7 +846,7 @@ def _on_save_downloads(values: dict[str, Any]) -> dict[str, Any]:
 
         try:
             attachment_limit_mb = int(effective.get("EMAIL_ATTACHMENT_SIZE_LIMIT_MB", 25))
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             return {
                 "error": True,
                 "message": "Attachment size limit (MB) must be a number",
@@ -962,6 +962,11 @@ def download_settings() -> list[SettingsField]:
                     "label": "Grimmory (API)",
                     "description": "Upload files directly to Grimmory",
                 },
+                {
+                    "value": "noop",
+                    "label": "Leave in Place",
+                    "description": "Do nothing — file stays wherever it was downloaded",
+                },
             ],
             default="folder",
             user_overridable=True,
@@ -982,7 +987,7 @@ def download_settings() -> list[SettingsField]:
         ActionButton(
             key="test_destination",
             label="Test Destination",
-            description="Check that Shelfmark can create and write to this destination.",
+            description="Check that LitFinder can create and write to this destination.",
             style="primary",
             callback=check_books_destination,
             show_when={
@@ -1270,7 +1275,7 @@ def download_settings() -> list[SettingsField]:
         ActionButton(
             key="test_destination_audiobook",
             label="Test Destination",
-            description="Check that Shelfmark can create and write to this audiobook destination.",
+            description="Check that LitFinder can create and write to this audiobook destination.",
             style="primary",
             callback=check_audiobook_destination,
             universal_only=True,
@@ -1492,6 +1497,17 @@ def download_source_settings() -> list[SettingsField]:
             description=(
                 "Show Direct Download in release-source lists and allow Direct mode "
                 "searches. Add your own mirror URLs in the Mirrors tab before using it."
+            ),
+            default=False,
+        ),
+        CheckboxField(
+            key="DIRECT_DOWNLOAD_LANGUAGE_FROM_PATH",
+            label="Detect Language From Distant Path",
+            description=(
+                "When language metadata is missing or unknown, parse the distant path "
+                "(file path shown in search results) for language tags like [BD FR] or [En]. "
+                "Also enables local language filtering so lgli files without AA language "
+                "metadata are not excluded before the distant path can be checked."
             ),
             default=False,
         ),
