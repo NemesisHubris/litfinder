@@ -660,6 +660,7 @@ def _install_custom_source_requirements(custom_dir: object) -> None:
                 str(req_file),
                 "--quiet",
                 "--disable-pip-version-check",
+                "--user",
             ],
             capture_output=True,
             text=True,
