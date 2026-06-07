@@ -641,12 +641,25 @@ def _install_custom_source_requirements(custom_dir: object) -> None:
     if not req_file.is_file():
         return
 
+    # Always ensure the local site-packages dir is on sys.path
+    target_dir = custom_dir / "site-packages"  # type: ignore[operator]
+    target_str = str(target_dir)
+    if target_dir.is_dir() and target_str not in sys.path:  # type: ignore[union-attr]
+        sys.path.insert(0, target_str)
+
     # Only reinstall if requirements.txt has changed since last successful install
     hash_file = custom_dir / ".requirements.hash"  # type: ignore[operator]
     current_hash = hashlib.sha256(req_file.read_bytes()).hexdigest()  # type: ignore[union-attr]
     if hash_file.is_file() and hash_file.read_text().strip() == current_hash:  # type: ignore[union-attr]
         logger.debug("Custom source dependencies already up to date, skipping install.")
         return
+
+    # Install into a writable directory under /config so it works inside the venv
+    target_dir = custom_dir / "site-packages"  # type: ignore[operator]
+    target_dir.mkdir(exist_ok=True)  # type: ignore[union-attr]
+    target_str = str(target_dir)
+    if target_str not in sys.path:
+        sys.path.insert(0, target_str)
 
     logger.info("Installing custom source dependencies from %s — this may take a moment…", req_file)
     try:
@@ -660,11 +673,12 @@ def _install_custom_source_requirements(custom_dir: object) -> None:
                 str(req_file),
                 "--quiet",
                 "--disable-pip-version-check",
-                "--user",
+                "--target",
+                target_str,
             ],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=300,
             check=False,
         )
         if result.returncode == 0:
